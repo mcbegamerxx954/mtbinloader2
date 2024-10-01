@@ -64,6 +64,7 @@ fn main() {
             false
         })
         .unwrap();
+    // Pattern taken from materialbinloader
     let scanner = Scanner::new("FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9");
     let addr = unsafe { scanner.find(None, mcmap.base as *const u8, mcmap.size_of_mapping()) };
     let addr = addr.get_addr();
