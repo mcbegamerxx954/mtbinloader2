@@ -159,8 +159,8 @@ unsafe extern "C" fn hResourcePackManager_ctor(
     log::info!("rpm ctor called");
     let result = call_original(this, unk1, unk2, needs_init);
     // This will only run once
-    if needs_init && PACKM_PTR.get().is_none() {
-        log::info!("packm ptr id setup");
+    if PACKM_PTR.get().is_none() {
+        log::warn!("packm ptr is setup");
         PACKM_PTR.set(PackManagerPtr(this));
         PACK_MANAGER.set(get_load(this));
     } else if PACKM_PTR.get().is_none() {

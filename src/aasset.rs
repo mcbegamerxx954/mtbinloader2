@@ -71,13 +71,12 @@ pub(crate) unsafe fn asset_open(
         return aasset;
     };
     log::info!("str unwrap");
-    let mtbin_path = "/renderer/materials/".to_string() + &os_filename.to_string_lossy();
+    let mtbin_path = "renderer/materials/".to_string() + &os_filename.to_string_lossy();
     log::info!("cxx thing");
     let_cxx_string!(cxx_str = mtbin_path);
     log::info!("created cxx str1");
     let_cxx_string!(cxx_out = "");
     log::info!("created cxx str2");
-
     let loadfn = match crate::PACK_MANAGER.get() {
         Some(ptr) => ptr,
         None => return aasset,
@@ -90,9 +89,10 @@ pub(crate) unsafe fn asset_open(
     loadfn(
         packm_ptr.0,
         transmute(&mut resource_loc),
-        transmute(&mut cxx_out),
+        transmute(cxx_out.as_mut().get_unchecked_mut()),
     );
     if cxx_out.is_empty() {
+        log::warn!("cxx out is empty");
         return aasset;
     }
     let buffer = cxx_out.as_bytes().to_vec();
