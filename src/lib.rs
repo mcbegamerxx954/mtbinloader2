@@ -1,6 +1,8 @@
 use std::{
     borrow::BorrowMut,
+    mem::MaybeUninit,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{Mutex, OnceLock},
 };
 mod aasset;
@@ -14,23 +16,26 @@ use lightningscanner::Scanner;
 use plt_rs::DynamicLibrary;
 
 use crate::plthook::replace_plt_functions;
-
 #[repr(C)]
-pub struct ResourceLocation<'a> {
-    file_system: i64,
-    path: &'a CxxString,
-    path_hash: u64,
-    full_hash: u64,
+pub struct ResourceLocation {
+    _data: [u8; 0],
+    _marker: core::marker::PhantomData<(*mut u8, core::marker::PhantomPinned)>,
 }
-impl<'a> ResourceLocation<'a> {
-    pub fn from_cxx_path(path: &'a CxxString) -> Self {
-        Self {
-            file_system: 0,
-            path,
-            path_hash: 0,
-            full_hash: 0,
-        }
+impl ResourceLocation {
+    pub fn from_str(str: &str) -> *mut ResourceLocation {
+        unsafe { resource_location_init(str.as_ptr(), str.len()) }
     }
+    // You must never use this struct again once this is called
+    pub unsafe fn free(loc: *mut ResourceLocation) {
+        unsafe { resource_location_free(loc) }
+    }
+}
+extern "C" {
+    fn resource_location_init(
+        strptr: *const libc::c_char,
+        size: libc::size_t,
+    ) -> *mut ResourceLocation;
+    fn resource_location_free(loc: *mut ResourceLocation);
 }
 pub fn setup_logging() {
     android_logger::init_once(
@@ -146,9 +151,7 @@ unsafe impl Sync for PackManagerPtr {}
 
 static BACKUP: OnceLock<MemBackup> = OnceLock::new();
 pub static PACKM_PTR: OnceLock<PackManagerPtr> = OnceLock::new();
-pub static PACK_MANAGER: OnceLock<
-    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
-> = OnceLock::new();
+pub static PACK_MANAGER: OnceLock<RpmLoadFn> = OnceLock::new();
 
 #[inline(never)]
 unsafe extern "C" fn hResourcePackManager_ctor(
@@ -193,13 +196,9 @@ unsafe fn call_original(
     log::info!("worked yippie");
     orig
 }
-unsafe fn get_load(
-    packm_ptr: *mut libc::c_void,
-) -> unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool {
+type RpmLoadFn = unsafe extern "C" fn(*mut c_void, *mut ResourceLocation, &mut CxxString) -> bool;
+unsafe fn get_load(packm_ptr: *mut libc::c_void) -> RpmLoadFn {
     let mut vptr = *transmute::<*mut c_void, *mut *mut unsafe extern "C" fn()>(packm_ptr);
-    let mut load = core::mem::transmute::<
-        unsafe extern "C" fn(),
-        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
-    >(*vptr.offset(2));
+    let mut load = core::mem::transmute::<unsafe extern "C" fn(), RpmLoadFn>(*vptr.offset(2));
     load
 }
