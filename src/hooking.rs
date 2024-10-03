@@ -1,48 +1,49 @@
+use libc::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use std::ptr;
 
-use libc::{PROT_EXEC, PROT_READ, PROT_WRITE};
-
 #[cfg(target_arch = "aarch64")]
-pub unsafe fn patch(target: *mut libc::c_uchar, hook_fn: *mut libc::c_void) -> [u8; 16] {
-    let code: [u8; 8] = [0x43, 0, 0, 0x58, 0x60, 0, 0x1f, 0xd6];
-    // magic value = code size (8) + addr size (8)
-    let backup = ptr::read_unaligned(target as *const [u8; 16]);
-    ptr::write(target as *mut [u8; 8], code);
-    let ptr = target.offset(8) as *mut fn();
-    *ptr = core::mem::transmute(hook_fn);
-    return backup;
+// Magic value: code len (8) + pointer length (8)
+pub const BACKUP_LEN: usize = 16;
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn hook(target: *mut u8, hook_fn: *const u8) -> [u8; BACKUP_LEN] {
+    const CODE: [u8; 8] = [
+        0x43, 0x00, 0x00, 0x58, // ldr x3, +0x8
+        0x60, 0x00, 0x1f, 0xd6, // br x3
+    ];
+    const CODE_USIZE: usize = usize::from_ne_bytes(CODE);
+    let backup = ptr::read_unaligned(target as *const [u8; BACKUP_LEN]);
+    ptr::write(target as *mut [usize; 2], [CODE_USIZE, hook_fn as usize]);
+    backup
 }
 
-pub unsafe fn setup_hook(
-    orig_fn: *mut libc::c_void,
-    hook_fn: *mut libc::c_void,
-) -> Option<[u8; 16]> {
-    let pa_addr = page_align_addr(orig_fn);
+pub unsafe fn setup_hook(orig_fn: *mut u8, hook_fn: *const u8) -> [u8; BACKUP_LEN] {
+    let pa_addr = page_align_addr(orig_fn) as *mut _;
     libc::mprotect(
         pa_addr,
         page_size::get(),
         PROT_READ | PROT_WRITE | PROT_EXEC,
     );
-    let result = patch(orig_fn as *mut libc::c_uchar, hook_fn);
+    let result = hook(orig_fn, hook_fn);
     let origptr = orig_fn as *const libc::c_void;
-    clear_cache::clear_cache(origptr, origptr.offset(16));
+    #[cfg(target_arch = "aarch64")]
+    clear_cache::clear_cache(origptr, origptr.offset(BACKUP_LEN as isize));
     libc::mprotect(pa_addr, page_size::get(), PROT_READ | PROT_EXEC);
-    Some(result)
+    result
 }
 
-pub unsafe fn unsetup_hook(orig_fn: *mut libc::c_void, orig_code: [u8; 16]) {
-    let pa_addr = page_align_addr(orig_fn);
+pub unsafe fn unsetup_hook(orig_fn: *mut u8, orig_code: [u8; BACKUP_LEN]) {
+    let pa_addr = page_align_addr(orig_fn) as *mut _;
     libc::mprotect(
         pa_addr,
         page_size::get(),
         PROT_READ | PROT_WRITE | PROT_EXEC,
     );
-    ptr::write_unaligned(orig_fn as *mut [u8; 16], orig_code);
-
+    ptr::write_unaligned(orig_fn as *mut [u8; BACKUP_LEN], orig_code);
     let origptr = orig_fn as *const libc::c_void;
-    clear_cache::clear_cache(origptr, origptr.offset(16));
+    #[cfg(target_arch = "aarch64")]
+    clear_cache::clear_cache(origptr, origptr.offset(BACKUP_LEN as isize));
     libc::mprotect(pa_addr, page_size::get(), PROT_READ | PROT_EXEC);
 }
-fn page_align_addr(addr: *mut libc::c_void) -> *mut libc::c_void {
-    (addr as usize & !(page_size::get() - 1)) as *mut libc::c_void
+fn page_align_addr(addr: *mut u8) -> *mut u8 {
+    (addr as usize & !(page_size::get() - 1)) as *mut u8
 }

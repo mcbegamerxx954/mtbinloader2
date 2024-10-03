@@ -1,16 +1,12 @@
-use cxx::{let_cxx_string, CxxString};
 use libc::{off64_t, off_t};
 use materialbin::{CompiledMaterialDefinition, MinecraftVersion};
 use ndk_sys::{AAsset, AAssetManager};
-
 use once_cell::sync::Lazy;
 use scroll::Pread;
 use std::{
     collections::HashMap,
     ffi::{CStr, CString, OsStr},
     io::{self, Cursor, Read, Seek},
-    mem::{self, transmute, MaybeUninit},
-    ops::{Deref, DerefMut},
     os::unix::ffi::OsStrExt,
     path::Path,
     sync::{Mutex, OnceLock},
@@ -68,38 +64,36 @@ pub(crate) unsafe fn asset_open(
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
     let Some(os_filename) = c_path.file_name() else {
+        log::warn!("Path had no filename: {c_path:?}");
         return aasset;
     };
-    log::info!("str unwrap");
     let mtbin_path = "renderer/materials/".to_string() + &os_filename.to_string_lossy();
-
-    log::info!("created cxx str1");
-    //let mut cxx_out: MaybeUninit<CxxString> = MaybeUninit::uninit();
-    let_cxx_string!(cxx_out = "");
-    log::info!("created cxx str2");
+    cxx::let_cxx_string!(cxx_out = "");
     let loadfn = match crate::PACK_MANAGER.get() {
         Some(ptr) => ptr,
-        None => return aasset,
+        None => {
+            log::warn!("ResourcePackManager fn is not ready yet?");
+            return aasset;
+        }
     };
-    log::info!("thing seem to be going fine..?");
     let packm_ptr = crate::PACKM_PTR.get().unwrap();
-    log::info!("we got packm ptr");
-    let mut resource_loc = ResourceLocation::from_str(&mtbin_path);
+    let resource_loc = ResourceLocation::from_str(&mtbin_path);
     log::info!("calling load fn");
     if packm_ptr.0.is_null() {
-        log::warn!("packm ptr is null");
+        log::error!("ResourcePackManager ptr is null");
     }
     loadfn(
         packm_ptr.0,
         resource_loc,
         cxx_out.as_mut().get_unchecked_mut(),
     );
+    // Free resource location
     ResourceLocation::free(resource_loc);
     if cxx_out.is_empty() {
         log::warn!("cxx out is empty");
         return aasset;
     }
-    log::warn!("cxx has something, len: {}", cxx_out.len());
+    log::trace!("cxx has something, len: {}", cxx_out.len());
     let buffer = cxx_out.as_bytes().to_vec();
     let file = Cursor::new(match process_material(man, &buffer) {
         Some(updated) => updated,
@@ -107,7 +101,7 @@ pub(crate) unsafe fn asset_open(
     });
     let mut wanted_lock = WANTED_ASSETS.lock().unwrap();
     wanted_lock.insert(AAssetPtr(aasset), file);
-    log::info!("finished");
+    // Try to clean up as much memory as possible
     cxx_out.clear();
     aasset
 }
@@ -121,12 +115,14 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         let material: CompiledMaterialDefinition = match data.pread_with(0, version) {
             Ok(data) => data,
             Err(e) => {
+                log::trace!("[version] Parsing failed: {e}");
                 continue;
             }
         };
 
         let mut output = Vec::with_capacity(data.len());
         if let Err(e) = material.write(&mut output, *mcver) {
+            log::trace!("[version] Write error: {e}");
             return None;
         }
         return Some(output);
@@ -139,7 +135,6 @@ pub(crate) unsafe fn asset_seek64(
     off: off64_t,
     whence: libc::c_int,
 ) -> off64_t {
-    log::info!("aasset seek64");
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -149,7 +144,6 @@ pub(crate) unsafe fn asset_seek64(
 }
 
 pub(crate) unsafe fn asset_seek(aasset: *mut AAsset, off: off_t, whence: libc::c_int) -> off_t {
-    log::info!("aasset seek32");
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -172,24 +166,24 @@ pub(crate) unsafe fn asset_read(
         Some(file) => file,
         None => return ndk_sys::AAsset_read(aasset, buf, count),
     };
+    // Allocate chunk to be read
     let mut rs_buffer: Vec<u8> = vec![0; count];
     let read_total = match file.read(&mut rs_buffer) {
         Ok(n) => n,
         Err(e) => {
-            log::warn!("failed read: {e}");
+            log::warn!("failed fake aaset read: {e}");
             return -1 as libc::c_int;
         }
     };
-    // try to make it as exact as possible
+    // Try to make the result exact
     rs_buffer.shrink_to_fit();
-    // this is safe because we are gonna forget rs_buffer
+    // Raw mut ptr is safe since we are giving it to caller
     let data_ptr = rs_buffer.as_mut_ptr();
-    // this should be safe since caller probably
-    // has a array of this size
+    // Buf should have the same size already
     let data_len = rs_buffer.len();
-    // rs_buffer is now adopted
+    // Forget about it so no drop happens
     std::mem::forget(rs_buffer);
-    // fill c buffer
+    // Fill the c buffer with rs_buffer
     unsafe {
         std::ptr::copy_nonoverlapping(data_ptr, buf as *mut u8, data_len);
     }
@@ -197,7 +191,6 @@ pub(crate) unsafe fn asset_read(
 }
 
 pub(crate) unsafe fn asset_length(aasset: *mut AAsset) -> off_t {
-    log::info!("aaset len");
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -207,7 +200,6 @@ pub(crate) unsafe fn asset_length(aasset: *mut AAsset) -> off_t {
 }
 
 pub(crate) unsafe fn asset_length64(aasset: *mut AAsset) -> off64_t {
-    log::info!("aasset len64");
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -217,7 +209,6 @@ pub(crate) unsafe fn asset_length64(aasset: *mut AAsset) -> off64_t {
 }
 
 pub(crate) unsafe fn asset_remaining(aasset: *mut AAsset) -> off_t {
-    log::info!("aasset remaining");
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -227,7 +218,6 @@ pub(crate) unsafe fn asset_remaining(aasset: *mut AAsset) -> off_t {
 }
 
 pub(crate) unsafe fn asset_remaining64(aasset: *mut AAsset) -> off64_t {
-    log::info!("aasset remaining64");
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -237,24 +227,19 @@ pub(crate) unsafe fn asset_remaining64(aasset: *mut AAsset) -> off64_t {
 }
 
 pub(crate) unsafe fn asset_close(aasset: *mut AAsset) {
-    log::info!("aaset close");
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     if wanted_assets.remove(&AAssetPtr(aasset)).is_none() {
         ndk_sys::AAsset_close(aasset);
     }
 }
 
-// i hate this so much
-
 pub(crate) unsafe fn asset_get_buffer(aasset: *mut AAsset) -> *const libc::c_void {
-    log::info!("aaset get buf");
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_getBuffer(aasset),
     };
-    // aughhhhhhhhh
-    // im scared shitless of this
+    // Lets hope this does not go boom boom
     file.get_mut().as_mut_ptr().cast()
 }
 
@@ -265,7 +250,10 @@ pub(crate) unsafe fn asset_fd_dummy(
 ) -> libc::c_int {
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     match wanted_assets.get(&AAssetPtr(aasset)) {
-        Some(_) => -1,
+        Some(_) => {
+            log::error!("WE GOT BUSTED NOOO");
+            return -1;
+        }
         None => ndk_sys::AAsset_openFileDescriptor(aasset, out_start, out_len),
     }
 }
@@ -277,13 +265,15 @@ pub(crate) unsafe fn asset_fd_dummy64(
 ) -> libc::c_int {
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     match wanted_assets.get(&AAssetPtr(aasset)) {
-        Some(_) => -1,
+        Some(_) => {
+            log::error!("WE GOT BUSTED NOOO");
+            return -1;
+        }
         None => ndk_sys::AAsset_openFileDescriptor64(aasset, out_start, out_len),
     }
 }
 
 pub(crate) unsafe fn asset_is_alloc(aasset: *mut AAsset) -> libc::c_int {
-    log::info!("aaset alloc check");
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => false as libc::c_int,
@@ -298,6 +288,7 @@ fn seek_facade(offset: i64, whence: libc::c_int, file: &mut Cursor<Vec<u8>>) -> 
             let u64_off = match u64::try_from(offset) {
                 Ok(uoff) => uoff,
                 Err(e) => {
+                    log::error!("signed ({offset}) to unsigned failed: {e}");
                     return -1;
                 }
             };
@@ -305,10 +296,22 @@ fn seek_facade(offset: i64, whence: libc::c_int, file: &mut Cursor<Vec<u8>>) -> 
         }
         libc::SEEK_CUR => io::SeekFrom::Current(offset),
         libc::SEEK_END => io::SeekFrom::End(offset),
-        _ => return -1,
+        _ => {
+            log::error!("Invalid seek whence");
+            return -1;
+        }
     };
     match file.seek(offset) {
-        Ok(new_offset) => new_offset.try_into().unwrap(),
-        Err(err) => -1,
+        Ok(new_offset) => match new_offset.try_into() {
+            Ok(int) => int,
+            Err(err) => {
+                log::error!("u64 ({new_offset}) to i64 failed: {err}");
+                return -1;
+            }
+        },
+        Err(err) => {
+            log::error!("aasset seek failed: {err}");
+            return -1;
+        }
     }
 }

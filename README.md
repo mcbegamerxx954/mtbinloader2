@@ -1,3 +1,3 @@
 # MaterialBinLoader 2 (deluxe real no fake)
-Only for arm64, still does not work
-,patterns by endermanyk or ddf
+Only for arm64, works well
+, patterns by endermanyk or ddf idk
