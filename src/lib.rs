@@ -67,7 +67,7 @@ fn main() {
         return;
     }
     #[cfg(target_arch = "arm")]
-    let addr = unsafe { addr.offset(-1) };
+    let addr = unsafe { addr.offset(1) };
     log::info!("hooking rpm");
     let result = unsafe { setup_hook(addr as *mut _, hook_rpm_ctor as *const _) };
     // Unwrapping is safe because this only happens once
