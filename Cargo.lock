@@ -20,12 +20,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.89"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86fdf8605db99b54d3cd748a44c6d04df638eb5dafb219b135d0149bd0db01f6"
-
-[[package]]
 name = "bitflags"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -190,7 +184,6 @@ name = "mtbinloader2"
 version = "0.1.0"
 dependencies = [
  "android_logger",
- "anyhow",
  "cc",
  "clear-cache",
  "ctor",
@@ -206,7 +199,6 @@ dependencies = [
  "plt-rs",
  "procmaps",
  "scroll",
- "thiserror",
 ]
 
 [[package]]

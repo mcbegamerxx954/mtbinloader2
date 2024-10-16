@@ -10,7 +10,11 @@ use libc::c_void;
 use lightningscanner::Scanner;
 use plt_rs::DynamicLibrary;
 // Byte pattern of ResourcePackManager constructor
+#[cfg(target_arch = "aarch64")]
 const RPMC_PATTERN: &str = "FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9";
+#[cfg(target_arch = "arm")]
+const RPMC_PATTERN: &str =
+    "F0 B5 03 AF 2D E9 00 07 90 B0 05 46 AE 48 98 46 92 46 78 44 00 68 00 68 0F 90 08 69";
 #[repr(C)]
 pub struct ResourceLocation {
     _data: [u8; 0],
@@ -62,6 +66,8 @@ fn main() {
         log::error!("cannot find signature");
         return;
     }
+    #[cfg(target_arch = "arm")]
+    let addr = unsafe { addr.offset(-1) };
     log::info!("hooking rpm");
     let result = unsafe { setup_hook(addr as *mut _, hook_rpm_ctor as *const _) };
     // Unwrapping is safe because this only happens once
