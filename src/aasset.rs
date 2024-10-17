@@ -106,11 +106,7 @@ pub(crate) unsafe fn asset_open(
     aasset
 }
 fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
-    let mcver = MC_VERSION.get_or_init(|| {
-        let pointer = std::ptr::NonNull::new(man).unwrap();
-        let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
-        get_latest_mcver(manager).unwrap()
-    });
+    let mcver = MinecraftVersion::V1_21_20;
     for version in materialbin::ALL_VERSIONS {
         let material: CompiledMaterialDefinition = match data.pread_with(0, version) {
             Ok(data) => data,
@@ -121,7 +117,7 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         };
 
         let mut output = Vec::with_capacity(data.len());
-        if let Err(e) = material.write(&mut output, *mcver) {
+        if let Err(e) = material.write(&mut output, mcver) {
             log::trace!("[version] Write error: {e}");
             return None;
         }
@@ -167,7 +163,7 @@ pub(crate) unsafe fn asset_read(
         None => return ndk_sys::AAsset_read(aasset, buf, count),
     };
     // Allocate chunk to be read
-    let mut rs_buffer: Vec<u8> = vec![0; count];
+    let mut rs_buffer = core::slice::from_raw_parts_mut(buf as *mut u8, count);
     let read_total = match file.read(&mut rs_buffer) {
         Ok(n) => n,
         Err(e) => {
@@ -175,18 +171,6 @@ pub(crate) unsafe fn asset_read(
             return -1 as libc::c_int;
         }
     };
-    // Try to make the result exact
-    rs_buffer.shrink_to_fit();
-    // Raw mut ptr is safe since we are giving it to caller
-    let data_ptr = rs_buffer.as_mut_ptr();
-    // Buf should have the same size already
-    let data_len = rs_buffer.len();
-    // Forget about it so no drop happens
-    std::mem::forget(rs_buffer);
-    // Fill the c buffer with rs_buffer
-    unsafe {
-        std::ptr::copy_nonoverlapping(data_ptr, buf as *mut u8, data_len);
-    }
     read_total as libc::c_int
 }
 

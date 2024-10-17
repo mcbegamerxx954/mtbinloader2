@@ -1,0 +1,29 @@
+name: Ci-Build
+
+on:
+  push:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        target: 
+          - aarch64-linux-android
+          - armv7-linux-androideabi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        run: rustup update stable
+      - name: Install cross-compilation tools
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }} 
+      - name: build
+        run: cargo build --release
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcbe_r-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/libmtbinloader2.so
+
