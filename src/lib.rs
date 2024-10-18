@@ -46,21 +46,20 @@ fn main() {
     log::info!("hiii");
     setup_logging();
     let mut path = Path::new("/proc/self/").to_path_buf();
-    let procmaps = procmaps::Mappings::from_path(&mut path).unwrap();
+    let self_pid = unsafe { libc::getpid() };
+    let procmaps = proc_maps::get_process_maps(self_pid).unwrap();
     let mcmap = procmaps
         .iter()
         .find(|map| {
-            if let procmaps::Path::MappedFile(filename) = &map.pathname {
-                if filename.contains("libminecraftpe.so") {
-                    return true;
-                }
-            }
-            false
+            map.filename().is_some_and(|f| {
+                f.file_name()
+                    .is_some_and(|f| f.as_encoded_bytes().ends_with(b"libminecraftpe.so"))
+            }) && map.is_exec()
         })
         .unwrap();
     // Pattern taken from materialbinloader
     let scanner = Scanner::new(RPMC_PATTERN);
-    let addr = unsafe { scanner.find(None, mcmap.base as *const u8, mcmap.size_of_mapping()) };
+    let addr = unsafe { scanner.find(None, mcmap.start() as *const u8, mcmap.size()) };
     let addr = addr.get_addr();
     if addr.is_null() {
         log::error!("cannot find signature");
