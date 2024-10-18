@@ -60,8 +60,8 @@ pub unsafe fn setup_hook(orig_fn: *mut u8, hook_fn: *const u8) -> [u8; BACKUP_LE
     );
     let result = hook(orig_fn, hook_fn);
     let origptr = orig_fn as *const libc::c_void;
-    #[cfg(target_arch = "aarch64")]
-    clear_cache::clear_cache(origptr, origptr.offset(BACKUP_LEN as isize));
+    // #[cfg(target_arch = "aarch64")]
+    // clear_cache::clear_cache(origptr, origptr.offset(BACKUP_LEN as isize));
     libc::mprotect(pa_addr, page_size::get(), PROT_READ | PROT_EXEC);
     result
 }
@@ -77,8 +77,8 @@ pub unsafe fn unsetup_hook(orig_fn: *mut u8, orig_code: [u8; BACKUP_LEN]) {
     let orig_fn = orig_fn.offset(-1);
     ptr::write_unaligned(orig_fn as *mut [u8; BACKUP_LEN], orig_code);
     let origptr = orig_fn as *const libc::c_void;
-    #[cfg(target_arch = "aarch64")]
-    clear_cache::clear_cache(origptr, origptr.offset(BACKUP_LEN as isize));
+    // #[cfg(target_arch = "aarch64")]
+    // clear_cache::clear_cache(origptr, origptr.offset(BACKUP_LEN as isize));
     libc::mprotect(pa_addr, page_size::get(), PROT_READ | PROT_EXEC);
 }
 fn page_align_addr(addr: *mut u8) -> *mut u8 {
