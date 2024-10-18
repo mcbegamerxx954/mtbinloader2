@@ -65,7 +65,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Prepare lib for release
-        run: mv target/${{ matrix.target }}/release/libmcbe_r.so libmcbe_r_${{ matrix.target }}.so
+        run: mv target/${{ matrix.target }}/release/libmtbinloader2.so libmtbinloader2_${{ matrix.target }}.so
       - name: Create Release
         uses: mikepenz/action-gh-release@v0.2.0-a03 #softprops/action-gh-release
         with:
