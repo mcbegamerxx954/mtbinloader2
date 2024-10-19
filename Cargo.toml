@@ -5,8 +5,6 @@ edition = "2021"
 
 [dependencies]
 android_logger = { version = "0.14.1", default-features = false }
-
-
 ctor = "0.2.8"
 cxx = "1.0.128"
 libc = "0.2.159"

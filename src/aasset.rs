@@ -5,11 +5,11 @@ use once_cell::sync::Lazy;
 use scroll::Pread;
 use std::{
     collections::HashMap,
-    ffi::{CStr, CString, OsStr},
+    ffi::{CStr, OsStr},
     io::{self, Cursor, Read, Seek},
     os::unix::ffi::OsStrExt,
     path::Path,
-    sync::{Mutex, OnceLock},
+    sync::Mutex,
 };
 
 use crate::ResourceLocation;
@@ -23,30 +23,28 @@ unsafe impl Send for AAssetPtr {}
 // the assets we want to intercept access to
 static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-static MC_VERSION: OnceLock<MinecraftVersion> = OnceLock::new();
-
-// This is unsafe because it calls stuff that can give us some nasty UB
-// But we let ub happen because honestly this is a hook
-fn get_latest_mcver(amanager: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
-    // This is kinda complicated but its simple
-    let versions = [
-        MinecraftVersion::V1_18_30,
-        MinecraftVersion::V1_19_60,
-        MinecraftVersion::V1_20_80,
-        MinecraftVersion::V1_21_20,
-    ];
-    let android_prefix = "assets/resource_packs/vanilla_";
-    let mut apk_version = None;
-    // Since this does not stop after finding one, it will replace it with the
-    // latest one if it exists
-    for version in versions {
-        let path = format!("{android_prefix}{version}/");
-        if amanager.open_dir(&CString::new(path).unwrap()).is_some() {
-            apk_version = Some(version);
-        }
-    }
-    apk_version
-}
+// TODO: Implement a better way of verison detection, this one does not work it seems
+// static MC_VERSION: OnceLock<MinecraftVersion> = OnceLock::new();
+// fn get_latest_mcver(amanager: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
+//     // This is kinda complicated but its simple
+//     let versions = [
+//         MinecraftVersion::V1_18_30,
+//         MinecraftVersion::V1_19_60,
+//         MinecraftVersion::V1_20_80,
+//         MinecraftVersion::V1_21_20,
+//     ];
+//     let android_prefix = "assets/resource_packs/vanilla_";
+//     let mut apk_version = None;
+//     // Since this does not stop after finding one, it will replace it with the
+//     // latest one if it exists
+//     for version in versions {
+//         let path = format!("{android_prefix}{version}/");
+//         if amanager.open_dir(&CString::new(path).unwrap()).is_some() {
+//             apk_version = Some(version);
+//         }
+//     }
+//     apk_version
+// }
 pub(crate) unsafe fn asset_open(
     man: *mut AAssetManager,
     fname: *const libc::c_char,
@@ -95,7 +93,7 @@ pub(crate) unsafe fn asset_open(
     }
     log::trace!("cxx has something, len: {}", cxx_out.len());
     let buffer = cxx_out.as_bytes().to_vec();
-    let file = Cursor::new(match process_material(man, &buffer) {
+    let file = Cursor::new(match process_material(&buffer) {
         Some(updated) => updated,
         None => buffer,
     });
@@ -105,7 +103,7 @@ pub(crate) unsafe fn asset_open(
     cxx_out.clear();
     aasset
 }
-fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
+fn process_material(data: &[u8]) -> Option<Vec<u8>> {
     let mcver = MinecraftVersion::V1_21_20;
     for version in materialbin::ALL_VERSIONS {
         let material: CompiledMaterialDefinition = match data.pread_with(0, version) {
