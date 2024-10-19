@@ -160,9 +160,9 @@ pub(crate) unsafe fn asset_read(
         Some(file) => file,
         None => return ndk_sys::AAsset_read(aasset, buf, count),
     };
-    // Allocate chunk to be read
+    // Reuse buffer given by caller
     let mut rs_buffer = core::slice::from_raw_parts_mut(buf as *mut u8, count);
-    let read_total = match file.read(&mut rs_buffer) {
+    let read_total = match file.read(rs_buffer) {
         Ok(n) => n,
         Err(e) => {
             log::warn!("failed fake aaset read: {e}");
@@ -234,7 +234,7 @@ pub(crate) unsafe fn asset_fd_dummy(
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => {
             log::error!("WE GOT BUSTED NOOO");
-            return -1;
+            -1
         }
         None => ndk_sys::AAsset_openFileDescriptor(aasset, out_start, out_len),
     }
@@ -249,7 +249,7 @@ pub(crate) unsafe fn asset_fd_dummy64(
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => {
             log::error!("WE GOT BUSTED NOOO");
-            return -1;
+            -1
         }
         None => ndk_sys::AAsset_openFileDescriptor64(aasset, out_start, out_len),
     }
@@ -288,12 +288,12 @@ fn seek_facade(offset: i64, whence: libc::c_int, file: &mut Cursor<Vec<u8>>) -> 
             Ok(int) => int,
             Err(err) => {
                 log::error!("u64 ({new_offset}) to i64 failed: {err}");
-                return -1;
+                -1
             }
         },
         Err(err) => {
             log::error!("aasset seek failed: {err}");
-            return -1;
+            -1
         }
     }
 }
