@@ -9,13 +9,22 @@ use hooking::{setup_hook, unsetup_hook, BACKUP_LEN};
 use libc::c_void;
 use lightningscanner::Scanner;
 use plt_rs::DynamicLibrary;
+use proc_maps::MapRange;
 
 // Byte pattern of ResourcePackManager constructor
 #[cfg(target_arch = "aarch64")]
-const RPMC_PATTERN: &str = "FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9";
+const RPMC_PATTERNS: [&str; 1] = ["FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"];
 #[cfg(target_arch = "arm")]
-const RPMC_PATTERN: &str =
-    "F0 B5 03 AF 2D E9 00 07 90 B0 05 46 AE 48 98 46 92 46 78 44 00 68 00 68 0F 90 08 69";
+const RPMC_PATTERNS: [&str; 3] = [
+    //1.20.50-1.20.81
+    "F0 B5 03 AF 2D E9 00 07 90 B0 05 46 AD 48 98 46 92 46 78 44 00 68 00 68 0F 90 08 69",
+    //1.21.0-1.21.31
+    "F0 B5 03 AF 2D E9 00 07 90 B0 05 46 AE 48 98 46 92 46 78 44 00 68 00 68 0F 90 08 69",
+    //1.21.40-1.21.41
+    "F0 B5 03 AF 2D E9 00 0F 8F B0 05 46 B1 48 98 46 92 46 78 44 00 68 00 68 0E 90 08 69",
+];
+// v1.21.2 pattern
+// "F0 B5 03 AF 2D E9 00 07 90 B0 05 46 AE 48 98 46 92 46 78 44 00 68 00 68 0F 90 08 69";
 // A opaque object to ResourceLocation
 #[repr(C)]
 pub struct ResourceLocation {
@@ -52,7 +61,7 @@ fn main() {
     let self_pid = unsafe { libc::getpid() };
     let procmaps = proc_maps::get_process_maps(self_pid).unwrap();
     let mcmap = procmaps
-        .iter()
+        .into_iter()
         .find(|map| {
             map.filename().is_some_and(|f| {
                 f.file_name()
@@ -61,16 +70,7 @@ fn main() {
         })
         .unwrap();
     // Pattern taken from materialbinloader
-    let scanner = Scanner::new(RPMC_PATTERN);
-    let addr = unsafe { scanner.find(None, mcmap.start() as *const u8, mcmap.size()) };
-    let addr = addr.get_addr();
-    if addr.is_null() {
-        log::error!("cannot find signature");
-        return;
-    }
-    #[cfg(target_arch = "arm")]
-    // Needed for reasons
-    let addr = unsafe { addr.offset(1) };
+    let addr = find_signatures(&RPMC_PATTERNS, mcmap).expect("No signsture was found");
     log::info!("hooking rpm");
     let result = unsafe { setup_hook(addr as *mut _, hook_rpm_ctor as *const _) };
     // Unwrapping is safe because this only happens once
@@ -82,6 +82,22 @@ fn main() {
         .unwrap();
     log::info!("hooking aasset");
     hook_aaset();
+}
+fn find_signatures(signatures: &[&str], range: MapRange) -> Option<*const u8> {
+    for sig in signatures {
+        let scanner = Scanner::new(sig);
+        let addr = unsafe { scanner.find(None, range.start() as *const u8, range.size()) };
+        let addr = addr.get_addr();
+        if addr.is_null() {
+            log::error!("cannot find signature");
+            continue;
+        }
+        #[cfg(target_arch = "arm")]
+        // Needed for reasons
+        let addr = unsafe { addr.offset(1) };
+        return Some(addr);
+    }
+    None
 }
 // Setup asset hooks
 pub fn hook_aaset() {
@@ -160,11 +176,11 @@ pub static PACK_MANAGER: OnceLock<RpmLoadFn> = OnceLock::new();
 
 #[inline(never)]
 unsafe extern "C" fn hook_rpm_ctor(
-    this: *mut libc::c_void,
+    this: *mut c_void,
     unk1: usize,
     unk2: usize,
     needs_init: bool,
-) -> *mut libc::c_void {
+) -> *mut c_void {
     log::info!("rpm ctor called");
     let result = call_original(this, unk1, unk2, needs_init);
     // This will only run once
@@ -177,11 +193,11 @@ unsafe extern "C" fn hook_rpm_ctor(
     result
 }
 unsafe fn call_original(
-    this: *mut libc::c_void,
+    this: *mut c_void,
     unk1: usize,
     unk2: usize,
     needs_init: bool,
-) -> *mut libc::c_void {
+) -> *mut c_void {
     let backup = BACKUP.get().unwrap();
     // We unsetup this since its a one time thing
     // which also allows us to call the original fn
@@ -190,14 +206,14 @@ unsafe fn call_original(
     // c is worse in this aspect change my mind
     let original = transmute::<
         *mut u8,
-        unsafe extern "C" fn(*mut libc::c_void, usize, usize, bool) -> *mut libc::c_void,
+        unsafe extern "C" fn(*mut c_void, usize, usize, bool) -> *mut c_void,
     >(backup.original_func_ptr);
     let orig = original(this, unk1, unk2, needs_init);
     log::info!("called original function");
     orig
 }
 type RpmLoadFn = unsafe extern "C" fn(*mut c_void, *mut ResourceLocation, &mut CxxString) -> bool;
-unsafe fn get_load(packm_ptr: *mut libc::c_void) -> RpmLoadFn {
+unsafe fn get_load(packm_ptr: *mut c_void) -> RpmLoadFn {
     // First dereference
     let vptr = *transmute::<*mut c_void, *mut *mut *const u8>(packm_ptr);
     // Now we offset by 2 to get load function and deref again

@@ -1,6 +1,7 @@
 use libc::{off64_t, off_t};
 use materialbin::{CompiledMaterialDefinition, MinecraftVersion};
 use ndk_sys::{AAsset, AAssetManager};
+
 use once_cell::sync::Lazy;
 use scroll::Pread;
 use std::{
@@ -23,7 +24,7 @@ unsafe impl Send for AAssetPtr {}
 // the assets we want to intercept access to
 static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-// TODO: Implement a better way of verison detection, this one does not work it seems
+
 // static MC_VERSION: OnceLock<MinecraftVersion> = OnceLock::new();
 // fn get_latest_mcver(amanager: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
 //     // This is kinda complicated but its simple
