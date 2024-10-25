@@ -1,51 +1,46 @@
+use crate::ResourceLocation;
 use libc::{off64_t, off_t};
 use materialbin::{CompiledMaterialDefinition, MinecraftVersion};
 use ndk_sys::{AAsset, AAssetManager};
-
 use once_cell::sync::Lazy;
 use scroll::Pread;
 use std::{
     collections::HashMap,
-    ffi::{CStr, OsStr},
+    ffi::{CStr, CString, OsStr},
     io::{self, Cursor, Read, Seek},
     os::unix::ffi::OsStrExt,
     path::Path,
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
 };
-
-use crate::ResourceLocation;
 
 // This makes me feel wrong... but all we will do is compare the pointer
 // and the struct will be used in a mutex so i guess this is safe??
 #[derive(PartialEq, Eq, Hash)]
 struct AAssetPtr(*const ndk_sys::AAsset);
 unsafe impl Send for AAssetPtr {}
-
-// the assets we want to intercept access to
+static MC_VERSION: OnceLock<MinecraftVersion> = OnceLock::new();
 static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
+    // safe: the string is static
+    let c_path = CString::new("assets/renderer/materials/UIText.material.bin").unwrap();
+    let mut file = man.open(&c_path).expect("Cannot find uitext mtbin");
+    let mut buf = Vec::with_capacity(file.length());
+    file.read_to_end(&mut buf).unwrap();
+    for version in materialbin::ALL_VERSIONS {
+        let _material: CompiledMaterialDefinition = match buf.pread_with(0, version) {
+            Ok(data) => data,
+            Err(e) => {
+                log::trace!("mcpe mtbin version is not {version}: {e}");
+                continue;
+            }
+        };
+        log::trace!("mcpe mtbin version is {version}");
+        return Some(version);
+    }
+    None
+}
 
-// static MC_VERSION: OnceLock<MinecraftVersion> = OnceLock::new();
-// fn get_latest_mcver(amanager: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
-//     // This is kinda complicated but its simple
-//     let versions = [
-//         MinecraftVersion::V1_18_30,
-//         MinecraftVersion::V1_19_60,
-//         MinecraftVersion::V1_20_80,
-//         MinecraftVersion::V1_21_20,
-//     ];
-//     let android_prefix = "assets/resource_packs/vanilla_";
-//     let mut apk_version = None;
-//     // Since this does not stop after finding one, it will replace it with the
-//     // latest one if it exists
-//     for version in versions {
-//         let path = format!("{android_prefix}{version}/");
-//         if amanager.open_dir(&CString::new(path).unwrap()).is_some() {
-//             apk_version = Some(version);
-//         }
-//     }
-//     apk_version
-// }
 pub(crate) unsafe fn asset_open(
     man: *mut AAssetManager,
     fname: *const libc::c_char,
@@ -93,10 +88,10 @@ pub(crate) unsafe fn asset_open(
         return aasset;
     }
     log::trace!("cxx has something, len: {}", cxx_out.len());
-    let buffer = cxx_out.as_bytes().to_vec();
-    let file = Cursor::new(match process_material(&buffer) {
+    let buffer = cxx_out.as_bytes();
+    let file = Cursor::new(match process_material(man, &buffer) {
         Some(updated) => updated,
-        None => buffer,
+        None => buffer.to_vec(),
     });
     let mut wanted_lock = WANTED_ASSETS.lock().unwrap();
     wanted_lock.insert(AAssetPtr(aasset), file);
@@ -104,8 +99,12 @@ pub(crate) unsafe fn asset_open(
     cxx_out.clear();
     aasset
 }
-fn process_material(data: &[u8]) -> Option<Vec<u8>> {
-    let mcver = MinecraftVersion::V1_21_20;
+fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
+    let mcver = MC_VERSION.get_or_init(|| {
+        let pointer = std::ptr::NonNull::new(man).unwrap();
+        let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
+        get_current_mcver(manager).unwrap()
+    });
     for version in materialbin::ALL_VERSIONS {
         let material: CompiledMaterialDefinition = match data.pread_with(0, version) {
             Ok(data) => data,
@@ -114,9 +113,12 @@ fn process_material(data: &[u8]) -> Option<Vec<u8>> {
                 continue;
             }
         };
-
+        // Prevent some work
+        if version == *mcver {
+            return None;
+        }
         let mut output = Vec::with_capacity(data.len());
-        if let Err(e) = material.write(&mut output, mcver) {
+        if let Err(e) = material.write(&mut output, *mcver) {
             log::trace!("[version] Write error: {e}");
             return None;
         }
@@ -162,7 +164,7 @@ pub(crate) unsafe fn asset_read(
         None => return ndk_sys::AAsset_read(aasset, buf, count),
     };
     // Reuse buffer given by caller
-    let mut rs_buffer = core::slice::from_raw_parts_mut(buf as *mut u8, count);
+    let rs_buffer = core::slice::from_raw_parts_mut(buf as *mut u8, count);
     let read_total = match file.read(rs_buffer) {
         Ok(n) => n,
         Err(e) => {
