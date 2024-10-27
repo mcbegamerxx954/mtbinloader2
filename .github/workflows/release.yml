@@ -27,6 +27,7 @@ jobs:
         run: cargo build --release
         env:
           CARGO_PROFILE_RELEASE_LTO: "fat"
+          CARGO_PROFILE_RELEASE_STRIP: "symbols"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
       - name: Build Changelog
         id: github_release
