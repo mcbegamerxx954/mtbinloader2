@@ -51,9 +51,7 @@ pub(crate) unsafe fn asset_open(
     let aasset = unsafe { ndk_sys::AAssetManager_open(man, fname, mode) };
     let c_str = unsafe { CStr::from_ptr(fname) };
     let raw_cstr = c_str.to_bytes();
-    if !raw_cstr.ends_with(b".material.bin") {
-        return aasset;
-    }
+
     log::info!("file is mtbin");
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
@@ -61,43 +59,57 @@ pub(crate) unsafe fn asset_open(
         log::warn!("Path had no filename: {c_path:?}");
         return aasset;
     };
-    let mtbin_path = "renderer/materials/".to_string() + &os_filename.to_string_lossy();
-    cxx::let_cxx_string!(cxx_out = "");
-    let loadfn = match crate::PACK_MANAGER.get() {
-        Some(ptr) => ptr,
-        None => {
-            log::warn!("ResourcePackManager fn is not ready yet?");
+    let replacement_list = [
+        ("assets/gui/dist/hbui/", "hbui/"),
+        ("assets/renderer/", "renderer/"),
+        ("assets/resource_packs/vanilla/cameras", "vanilla_cameras/"),
+        //        ("assets/", "override/"),
+    ];
+    for replacement in replacement_list {
+        if let Ok(file) = c_path.strip_prefix(replacement.0) {
+            cxx::let_cxx_string!(cxx_out = "");
+            let loadfn = match crate::PACK_MANAGER.get() {
+                Some(ptr) => ptr,
+                None => {
+                    log::warn!("ResourcePackManager fn is not ready yet?");
+                    return aasset;
+                }
+            };
+            let file_path = replacement.1.to_string() + file.to_str().unwrap();
+            let packm_ptr = crate::PACKM_PTR.get().unwrap();
+            let resource_loc = ResourceLocation::from_str(&file_path);
+            log::info!("loading rpck file: {}", &file_path);
+            if packm_ptr.0.is_null() {
+                log::error!("ResourcePackManager ptr is null");
+                return aasset;
+            }
+            loadfn(
+                packm_ptr.0,
+                resource_loc,
+                cxx_out.as_mut().get_unchecked_mut(),
+            );
+            // Free resource location
+            ResourceLocation::free(resource_loc);
+            if cxx_out.is_empty() {
+                log::warn!("cxx out is empty");
+                return aasset;
+            }
+            log::trace!("cxx has something, len: {}", cxx_out.len());
+            let buffer = if os_filename.as_encoded_bytes().ends_with(b".material.bin") {
+                match process_material(man, cxx_out.as_bytes()) {
+                    Some(updated) => updated,
+                    None => cxx_out.as_bytes().to_vec(),
+                }
+            } else {
+                cxx_out.as_bytes().to_vec()
+            };
+            let mut wanted_lock = WANTED_ASSETS.lock().unwrap();
+            wanted_lock.insert(AAssetPtr(aasset), Cursor::new(buffer));
+            // we do not clwan cxx string because cxx ceate does that for us
             return aasset;
         }
-    };
-    let packm_ptr = crate::PACKM_PTR.get().unwrap();
-    let resource_loc = ResourceLocation::from_str(&mtbin_path);
-    log::info!("calling load fn");
-    if packm_ptr.0.is_null() {
-        log::error!("ResourcePackManager ptr is null");
     }
-    loadfn(
-        packm_ptr.0,
-        resource_loc,
-        cxx_out.as_mut().get_unchecked_mut(),
-    );
-    // Free resource location
-    ResourceLocation::free(resource_loc);
-    if cxx_out.is_empty() {
-        log::warn!("cxx out is empty");
-        return aasset;
-    }
-    log::trace!("cxx has something, len: {}", cxx_out.len());
-    let buffer = cxx_out.as_bytes();
-    let file = Cursor::new(match process_material(man, &buffer) {
-        Some(updated) => updated,
-        None => buffer.to_vec(),
-    });
-    let mut wanted_lock = WANTED_ASSETS.lock().unwrap();
-    wanted_lock.insert(AAssetPtr(aasset), file);
-    // Try to clean up as much memory as possible
-    cxx_out.clear();
-    aasset
+    return aasset;
 }
 fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
     let mcver = MC_VERSION.get_or_init(|| {
