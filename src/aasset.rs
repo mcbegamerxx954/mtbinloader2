@@ -23,20 +23,18 @@ static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
     // safe: the string is static
-    let c_path = CString::new("assets/renderer/materials/UIText.material.bin").unwrap();
+    let c_path =
+        CStr::from_bytes_with_nul("assets/renderer/materials/UIText.material.bin\0").unwrap();
     let mut file = man.open(&c_path).expect("Cannot find uitext mtbin");
     let mut buf = Vec::with_capacity(file.length());
     file.read_to_end(&mut buf).unwrap();
     for version in materialbin::ALL_VERSIONS {
-        let _material: CompiledMaterialDefinition = match buf.pread_with(0, version) {
-            Ok(data) => data,
-            Err(e) => {
-                log::trace!("mcpe mtbin version is not {version}: {e}");
-                continue;
-            }
+        if buf
+            .pread_with::<CompiledMaterialDefinition>(0, version)
+            .is_ok()
+        {
+            log::info!("Mc version is {version}");
         };
-        log::trace!("mcpe mtbin version is {version}");
-        return Some(version);
     }
     None
 }
@@ -51,8 +49,6 @@ pub(crate) unsafe fn asset_open(
     let aasset = unsafe { ndk_sys::AAssetManager_open(man, fname, mode) };
     let c_str = unsafe { CStr::from_ptr(fname) };
     let raw_cstr = c_str.to_bytes();
-
-    log::info!("file is mtbin");
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
     let Some(os_filename) = c_path.file_name() else {
@@ -91,10 +87,9 @@ pub(crate) unsafe fn asset_open(
             // Free resource location
             ResourceLocation::free(resource_loc);
             if cxx_out.is_empty() {
-                log::warn!("cxx out is empty");
+                log::info!("File was not found");
                 return aasset;
             }
-            log::trace!("cxx has something, len: {}", cxx_out.len());
             let buffer = if os_filename.as_encoded_bytes().ends_with(b".material.bin") {
                 match process_material(man, cxx_out.as_bytes()) {
                     Some(updated) => updated,
@@ -169,7 +164,6 @@ pub(crate) unsafe fn asset_read(
     buf: *mut libc::c_void,
     count: libc::size_t,
 ) -> libc::c_int {
-    log::info!("aasset read");
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
