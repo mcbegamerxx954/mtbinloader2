@@ -40,6 +40,7 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
             .is_ok()
         {
             log::info!("Mc version is {version}");
+            return Some(version);
         };
     }
     None
@@ -69,10 +70,8 @@ pub(crate) unsafe fn asset_open(
     let Some(os_filename) = c_path.file_name() else {
         log::warn!("Path had no filename: {c_path:?}");
         return aasset;
-    }; 
-    if os_filename.as_bytes().ends_with(b"UIText.material.bin") {
-        let aasset = 
-    }
+    };
+
     let replacement_list = [
         ("assets/gui/dist/hbui/", "hbui/"),
         ("assets/renderer/", "renderer/"),
