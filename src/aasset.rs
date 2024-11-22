@@ -1,6 +1,7 @@
 use crate::ResourceLocation;
 use libc::{off64_t, off_t};
 use materialbin::{CompiledMaterialDefinition, MinecraftVersion};
+use ndk::asset::Asset;
 use ndk_sys::{AAsset, AAssetManager};
 use once_cell::sync::Lazy;
 use scroll::Pread;
@@ -18,14 +19,19 @@ use std::{
 #[derive(PartialEq, Eq, Hash)]
 struct AAssetPtr(*const ndk_sys::AAsset);
 unsafe impl Send for AAssetPtr {}
-static MC_VERSION: OnceLock<MinecraftVersion> = OnceLock::new();
+static MC_VERSION: OnceLock<Option<MinecraftVersion>> = OnceLock::new();
 static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+// Im very sorry but its just that AssetManager is so shitty to work with
+// i cant handle how randomly it breaks
 fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
-    // safe: the string is static
-    let c_path =
-        CStr::from_bytes_with_nul("assets/renderer/materials/UIText.material.bin\0").unwrap();
-    let mut file = man.open(&c_path).expect("Cannot find uitext mtbin");
+    let mut file = match get_uitext(man) {
+        Some(asset) => asset,
+        None => {
+            log::error!("Shader fixing is disabled as no mc version was found");
+            return None;
+        }
+    };
     let mut buf = Vec::with_capacity(file.length());
     file.read_to_end(&mut buf).unwrap();
     for version in materialbin::ALL_VERSIONS {
@@ -38,13 +44,22 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
     }
     None
 }
-
+fn get_uitext(man: ndk::asset::AssetManager) -> Option<Asset> {
+    // const just so its all at compile time only
+    const NEW: &CStr = c"assets/renderer/materials/UIText.material.bin";
+    const OLD: &CStr = c"renderer/materials/UIText.material.bin";
+    for path in [NEW, OLD] {
+        if let Some(asset) = man.open(path) {
+            return Some(asset);
+        }
+    }
+    None
+}
 pub(crate) unsafe fn asset_open(
     man: *mut AAssetManager,
     fname: *const libc::c_char,
     mode: libc::c_int,
 ) -> *mut ndk_sys::AAsset {
-    log::info!("aaset open");
     // This is where ub can happen, but we are merely a hook.
     let aasset = unsafe { ndk_sys::AAssetManager_open(man, fname, mode) };
     let c_str = unsafe { CStr::from_ptr(fname) };
@@ -54,12 +69,18 @@ pub(crate) unsafe fn asset_open(
     let Some(os_filename) = c_path.file_name() else {
         log::warn!("Path had no filename: {c_path:?}");
         return aasset;
-    };
+    }; 
+    if os_filename.as_bytes().ends_with(b"UIText.material.bin") {
+        let aasset = 
+    }
     let replacement_list = [
         ("assets/gui/dist/hbui/", "hbui/"),
         ("assets/renderer/", "renderer/"),
         ("assets/resource_packs/vanilla/cameras", "vanilla_cameras/"),
-        //        ("assets/", "override/"),
+        // Old paths, should not hit perf too bad
+        ("gui/dist/hbui/", "hbui/"),
+        ("renderer/", "renderer/"),
+        ("resource_packs/vanilla/cameras", "vanilla_cameras/"),
     ];
     for replacement in replacement_list {
         if let Ok(file) = c_path.strip_prefix(replacement.0) {
@@ -110,8 +131,10 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
     let mcver = MC_VERSION.get_or_init(|| {
         let pointer = std::ptr::NonNull::new(man).unwrap();
         let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
-        get_current_mcver(manager).unwrap()
+        get_current_mcver(manager)
     });
+    // just ignore if no mc version was found
+    let mcver = (*mcver)?;
     for version in materialbin::ALL_VERSIONS {
         let material: CompiledMaterialDefinition = match data.pread_with(0, version) {
             Ok(data) => data,
@@ -121,11 +144,11 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
             }
         };
         // Prevent some work
-        if version == *mcver {
+        if version == mcver {
             return None;
         }
         let mut output = Vec::with_capacity(data.len());
-        if let Err(e) = material.write(&mut output, *mcver) {
+        if let Err(e) = material.write(&mut output, mcver) {
             log::trace!("[version] Write error: {e}");
             return None;
         }
