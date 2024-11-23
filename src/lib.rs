@@ -13,18 +13,17 @@ use proc_maps::MapRange;
 
 // Byte pattern of ResourcePackManager constructor
 #[cfg(target_arch = "aarch64")]
-const RPMC_PATTERNS: [&str; 1] = ["FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"];
-#[cfg(target_arch = "arm")]
-const RPMC_PATTERNS: [&str; 3] = [
-    //1.20.50-1.20.81
-    "F0 B5 03 AF 2D E9 00 07 90 B0 05 46 AD 48 98 46 92 46 78 44 00 68 00 68 0F 90 08 69",
-    //1.21.0-1.21.31
-    "F0 B5 03 AF 2D E9 00 07 90 B0 05 46 AE 48 98 46 92 46 78 44 00 68 00 68 0F 90 08 69",
-    //1.21.40-1.21.41
-    "F0 B5 03 AF 2D E9 00 0F 8F B0 05 46 B1 48 98 46 92 46 78 44 00 68 00 68 0E 90 08 69",
+const RPMC_PATTERNS: [&str; 2] = [
+    //1.19.50-1.21.44
+    "FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9",
+    //1.21.60.21preview
+    "FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4",
 ];
-// v1.21.2 pattern
-// "F0 B5 03 AF 2D E9 00 07 90 B0 05 46 AE 48 98 46 92 46 78 44 00 68 00 68 0F 90 08 69";
+#[cfg(target_arch = "arm")]
+const RPMC_PATTERNS: [&str; 1] = [
+    //1.19.50-1.21.44
+    "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
+];
 // A opaque object to ResourceLocation
 #[repr(C)]
 pub struct ResourceLocation {
