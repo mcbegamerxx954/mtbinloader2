@@ -1,5 +1,6 @@
 use clear_cache::clear_cache;
 use libc::{PROT_EXEC, PROT_READ, PROT_WRITE};
+use region::{protect_with_handle, Protection};
 use std::ptr;
 
 #[cfg(target_arch = "aarch64")]
@@ -84,40 +85,27 @@ pub unsafe fn hook(target: *mut u8, hook_fn: usize) {
 /// the function at orig_fn will always redirect to hook_fn with no way to call the original
 /// other than unhooking the function
 pub unsafe fn setup_hook(orig_fn: *mut u8, hook_fn: *const u8) -> [u8; BACKUP_LEN] {
-    let pa_addr = page_align_addr(orig_fn) as *mut _;
-    libc::mprotect(
-        pa_addr,
-        page_size::get(),
-        PROT_READ | PROT_WRITE | PROT_EXEC,
-    );
     #[cfg(not(target_arch = "arm"))]
     let offset_fn = orig_fn;
     #[cfg(target_arch = "arm")]
     let offset_fn = orig_fn.offset(-1);
+    let handle =
+        protect_with_handle(offset_fn, BACKUP_LEN, Protection::READ_WRITE_EXECUTE).unwrap();
     let result = ptr::read_unaligned(offset_fn as *mut [u8; BACKUP_LEN]);
     hook(orig_fn, hook_fn as usize);
-    clean_cache(offset_fn as *const u8, BACKUP_LEN);
-    // We do not clean instruction cache because mprotect does that for us i guess
-    libc::mprotect(pa_addr, page_size::get(), PROT_READ | PROT_EXEC);
+    clean_cache(orig_fn as *const u8, BACKUP_LEN);
+    drop(handle);
     result
 }
 
 pub unsafe fn unsetup_hook(orig_fn: *mut u8, orig_code: [u8; BACKUP_LEN]) {
-    let pa_addr = page_align_addr(orig_fn) as *mut _;
-    libc::mprotect(
-        pa_addr,
-        page_size::get(),
-        PROT_READ | PROT_WRITE | PROT_EXEC,
-    );
     #[cfg(target_arch = "arm")]
     let orig_fn = orig_fn.offset(-1);
+    let handle = protect_with_handle(orig_fn, BACKUP_LEN, Protection::READ_WRITE_EXECUTE);
     ptr::write_unaligned(orig_fn as *mut [u8; BACKUP_LEN], orig_code);
     clean_cache(orig_fn as *const u8, BACKUP_LEN);
     // We do not clean instruction cache because mprotect does that for us i guess
-    libc::mprotect(pa_addr, page_size::get(), PROT_READ | PROT_EXEC);
-}
-fn page_align_addr(addr: *mut u8) -> *mut u8 {
-    (addr as usize & !(page_size::get() - 1)) as *mut u8
+    drop(handle)
 }
 
 #[inline(always)]
