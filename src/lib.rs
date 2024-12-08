@@ -118,7 +118,7 @@ pub fn hook_aaset() {
     // Hook all aassetmanager functions
     replace_plt_functions(
         &dyn_lib,
-        &[
+        [
             ("AAssetManager_open", aasset::asset_open as *const _),
             ("AAsset_read", aasset::asset_read as *const _),
             ("AAsset_close", aasset::asset_close as *const _),

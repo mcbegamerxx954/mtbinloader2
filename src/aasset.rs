@@ -7,7 +7,7 @@ use once_cell::sync::Lazy;
 use scroll::Pread;
 use std::{
     collections::HashMap,
-    ffi::{CStr, CString, OsStr},
+    ffi::{CStr, OsStr},
     io::{self, Cursor, Read, Seek},
     os::unix::ffi::OsStrExt,
     path::Path,

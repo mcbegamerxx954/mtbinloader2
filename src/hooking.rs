@@ -1,5 +1,4 @@
 use clear_cache::clear_cache;
-use libc::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use region::{protect_with_handle, Protection};
 use std::ptr;
 
@@ -89,27 +88,24 @@ pub unsafe fn setup_hook(orig_fn: *mut u8, hook_fn: *const u8) -> [u8; BACKUP_LE
     let offset_fn = orig_fn;
     #[cfg(target_arch = "arm")]
     let offset_fn = orig_fn.offset(-1);
-    let handle =
-        protect_with_handle(offset_fn, BACKUP_LEN, Protection::READ_WRITE_EXECUTE).unwrap();
+    let _handle = protect_with_handle(offset_fn, BACKUP_LEN, Protection::READ_WRITE_EXECUTE)
+        .expect("Failed mprotect-ing for hook");
     let result = ptr::read_unaligned(offset_fn as *mut [u8; BACKUP_LEN]);
     hook(orig_fn, hook_fn as usize);
-    clean_cache(orig_fn as *const u8, BACKUP_LEN);
-    drop(handle);
+    clean_cache(offset_fn as *const u8, BACKUP_LEN);
     result
 }
 
 pub unsafe fn unsetup_hook(orig_fn: *mut u8, orig_code: [u8; BACKUP_LEN]) {
     #[cfg(target_arch = "arm")]
     let orig_fn = orig_fn.offset(-1);
-    let handle = protect_with_handle(orig_fn, BACKUP_LEN, Protection::READ_WRITE_EXECUTE);
+    let _handle = protect_with_handle(orig_fn, BACKUP_LEN, Protection::READ_WRITE_EXECUTE)
+        .expect("Failed mprotect-ing for unhook");
     ptr::write_unaligned(orig_fn as *mut [u8; BACKUP_LEN], orig_code);
     clean_cache(orig_fn as *const u8, BACKUP_LEN);
-    // We do not clean instruction cache because mprotect does that for us i guess
-    drop(handle)
 }
 
 #[inline(always)]
 unsafe fn clean_cache(ptr: *const u8, len: usize) -> bool {
     clear_cache(ptr, ptr.add(len))
 }
-struct FunctionBackup {}
