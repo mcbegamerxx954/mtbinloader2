@@ -1,15 +1,14 @@
-use std::sync::OnceLock;
+use std::{ffi::CStr, ops::Range, sync::OnceLock};
 mod aasset;
 mod hooking;
 mod plthook;
 use crate::plthook::replace_plt_functions;
-use core::mem::transmute;
+use core::{mem::transmute, slice};
 use cxx::CxxString;
 use hooking::{setup_hook, unsetup_hook, BACKUP_LEN};
-use libc::c_void;
+use libc::{c_void, dl_iterate_phdr, PF_X25, PT_LOAD};
 use lightningscanner::Scanner;
-use plt_rs::DynamicLibrary;
-use proc_maps::MapRange;
+use plt_rs::{collect_modules, DynamicLibrary, LoadedLibrary};
 
 // Byte pattern of ResourcePackManager constructor
 #[cfg(target_arch = "aarch64")]
@@ -57,19 +56,9 @@ pub fn setup_logging() {
 fn main() {
     setup_logging();
     log::info!("Starting");
-    let self_pid = unsafe { libc::getpid() };
-    let procmaps = proc_maps::get_process_maps(self_pid).unwrap();
-    let mcmap = procmaps
-        .into_iter()
-        .find(|map| {
-            map.filename().is_some_and(|f| {
-                f.file_name()
-                    .is_some_and(|f| f.as_encoded_bytes().ends_with(b"libminecraftpe.so"))
-            }) && map.is_exec()
-        })
-        .unwrap();
+    let range = dumb_callback().unwrap();
     // Pattern taken from materialbinloader
-    let addr = find_signatures(&RPMC_PATTERNS, mcmap).expect("No signsture was found");
+    let addr = find_signatures(&RPMC_PATTERNS, range).expect("No signsture was found");
     log::info!("hooking rpm");
     let result = unsafe { setup_hook(addr as *mut _, hook_rpm_ctor as *const _) };
     // Unwrapping is safe because this only happens once
@@ -82,10 +71,10 @@ fn main() {
     log::info!("hooking aasset");
     hook_aaset();
 }
-fn find_signatures(signatures: &[&str], range: MapRange) -> Option<*const u8> {
+fn find_signatures(signatures: &[&str], range: (usize, usize)) -> Option<*const u8> {
     for sig in signatures {
         let scanner = Scanner::new(sig);
-        let addr = unsafe { scanner.find(None, range.start() as *const u8, range.size()) };
+        let addr = unsafe { scanner.find(None, range.0 as *const u8, range.1) };
         let addr = addr.get_addr();
         if addr.is_null() {
             log::error!("cannot find signature");
@@ -218,4 +207,49 @@ unsafe fn get_load(packm_ptr: *mut c_void) -> RpmLoadFn {
     // Now we offset by 2 to get load function and deref again
     // and then we transmute into a function pointer
     transmute::<*const u8, RpmLoadFn>(*vptr.offset(2))
+}
+fn dumb_callback() -> Option<(usize, usize)> {
+    let mut range: (usize, usize) = (0, 0);
+    unsafe {
+        libc::dl_iterate_phdr(
+            Some(callback),
+            &mut range as *mut (usize, usize) as *mut libc::c_void,
+        )
+    };
+    if range != (0, 0) {
+        return Some(range);
+    }
+    None
+}
+
+unsafe extern "C" fn callback(
+    phdr: *mut libc::dl_phdr_info,
+    size: usize,
+    deeta: *mut libc::c_void,
+) -> i32 {
+    let Some(phdr) = phdr.as_ref() else {
+        return 0;
+    };
+    let name = CStr::from_ptr(phdr.dlpi_name).to_string_lossy();
+    if name.contains("libminecraftpe") {
+        if phdr.dlpi_phnum == 0 {
+            return 0;
+        }
+        // safe: we ensure that length is not zero, and trust the system to not go against us
+        // and put a library with phdr set at some random out-of-bounds address
+        let sections = slice::from_raw_parts(phdr.dlpi_phdr, phdr.dlpi_phnum as usize);
+        const PF_X: u32 = 1 << 0;
+        let Some(code_section) = sections
+            .iter()
+            .find(|phdr| phdr.p_type == PT_LOAD && (phdr.p_flags & PF_X) == 1)
+        else {
+            return 0;
+        };
+        let section_addr = phdr.dlpi_addr + code_section.p_vaddr;
+        // unwrap is safe, we ensure we always give it a correct pointer
+        let data_ref = (deeta as *mut (usize, usize)).as_mut().unwrap();
+        *data_ref = (section_addr as usize, code_section.p_memsz as usize);
+        return -1;
+    }
+    0
 }
