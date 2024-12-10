@@ -67,22 +67,17 @@ pub(crate) unsafe fn asset_open(
     let raw_cstr = c_str.to_bytes();
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
-    let Some(os_filename) = c_path.file_name() else {
-        log::warn!("Path had no filename: {c_path:?}");
-        return aasset;
+    let stripped_path = match c_path.strip_prefix("assets/") {
+        Ok(stripped) => stripped,
+        Err(_) => c_path,
     };
-
     let replacement_list = [
-        ("assets/gui/dist/hbui/", "hbui/"),
-        ("assets/renderer/", "renderer/"),
-        ("assets/resource_packs/vanilla/cameras", "vanilla_cameras/"),
-        // Old paths, should not hit perf too bad
         ("gui/dist/hbui/", "hbui/"),
         ("renderer/", "renderer/"),
         ("resource_packs/vanilla/cameras", "vanilla_cameras/"),
     ];
     for replacement in replacement_list {
-        if let Ok(file) = c_path.strip_prefix(replacement.0) {
+        if let Ok(file) = stripped_path.strip_prefix(replacement.0) {
             cxx::let_cxx_string!(cxx_out = "");
             let loadfn = match crate::PACK_MANAGER.get() {
                 Some(ptr) => ptr,
@@ -110,6 +105,10 @@ pub(crate) unsafe fn asset_open(
                 log::info!("File was not found");
                 return aasset;
             }
+            let Some(os_filename) = c_path.file_name() else {
+                log::warn!("Path had no filename: {c_path:?}");
+                return aasset;
+            };
             let buffer = if os_filename.as_encoded_bytes().ends_with(b".material.bin") {
                 match process_material(man, cxx_out.as_bytes()) {
                     Some(updated) => updated,

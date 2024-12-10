@@ -1,5 +1,5 @@
 use plt_rs::DynamicLibrary;
-use region::{protect_with_handle, Protection};
+use region::{protect, Protection};
 
 pub fn replace_plt_functions<const LEN: usize>(
     dyn_lib: &DynamicLibrary,
@@ -18,8 +18,9 @@ fn replace_plt_function(base_addr: usize, offset: usize, replacement: *const ())
     const PTR_LEN: usize = std::mem::size_of::<usize>();
     unsafe {
         // Set the memory page to read, write
-        let _handle = protect_with_handle(plt_fn_ptr, PTR_LEN, Protection::READ_WRITE).unwrap();
+        protect(plt_fn_ptr, PTR_LEN, Protection::READ_WRITE).unwrap();
         // Replace the function address
         plt_fn_ptr.write_unaligned(replacement);
+        protect(plt_fn_ptr, PTR_LEN, Protection::READ).unwrap();
     }
 }

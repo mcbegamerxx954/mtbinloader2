@@ -1,4 +1,4 @@
-use std::{ffi::CStr, ops::Range, sync::OnceLock};
+use std::{ffi::CStr, sync::OnceLock};
 mod aasset;
 mod hooking;
 mod plthook;
@@ -6,9 +6,9 @@ use crate::plthook::replace_plt_functions;
 use core::{mem::transmute, slice};
 use cxx::CxxString;
 use hooking::{setup_hook, unsetup_hook, BACKUP_LEN};
-use libc::{c_void, dl_iterate_phdr, PF_X25, PT_LOAD};
+use libc::{c_void, PT_LOAD};
 use lightningscanner::Scanner;
-use plt_rs::{collect_modules, DynamicLibrary, LoadedLibrary};
+use plt_rs::DynamicLibrary;
 
 // Byte pattern of ResourcePackManager constructor
 #[cfg(target_arch = "aarch64")]
@@ -57,7 +57,7 @@ fn main() {
     setup_logging();
     log::info!("Starting");
     let range = dumb_callback().unwrap();
-    // Pattern taken from materialbinloader
+    // Pattern from mrwang
     let addr = find_signatures(&RPMC_PATTERNS, range).expect("No signsture was found");
     log::info!("hooking rpm");
     let result = unsafe { setup_hook(addr as *mut _, hook_rpm_ctor as *const _) };
@@ -69,7 +69,10 @@ fn main() {
         })
         .unwrap();
     log::info!("hooking aasset");
-    hook_aaset();
+    // Likely mc will also not start up the resource pack system before we get to the main screen
+    // so we make use of that to reduce startup time by making the less important hooks
+    // be setup in the background
+    std::thread::spawn(hook_aaset);
 }
 fn find_signatures(signatures: &[&str], range: (usize, usize)) -> Option<*const u8> {
     for sig in signatures {
@@ -89,7 +92,7 @@ fn find_signatures(signatures: &[&str], range: (usize, usize)) -> Option<*const 
 }
 // Setup asset hooks
 pub fn hook_aaset() {
-    const LIBNAME: &str = "libminecraftpe";
+    const LIBNAME: &str = "libminecraftpe.so";
     let lib_entry = match find_lib(LIBNAME) {
         Some(lib) => lib,
         None => {
@@ -141,7 +144,7 @@ fn find_lib<'a>(target_name: &str) -> Option<plt_rs::LoadedLibrary<'a>> {
     let loaded_modules = plt_rs::collect_modules();
     loaded_modules
         .into_iter()
-        .find(|lib| lib.name().contains(target_name))
+        .find(|lib| lib.name().ends_with(target_name))
 }
 // Backup of function ptr and its instructions
 #[derive(Debug)]
@@ -224,14 +227,14 @@ fn dumb_callback() -> Option<(usize, usize)> {
 
 unsafe extern "C" fn callback(
     phdr: *mut libc::dl_phdr_info,
-    size: usize,
+    _size: usize,
     deeta: *mut libc::c_void,
 ) -> i32 {
     let Some(phdr) = phdr.as_ref() else {
         return 0;
     };
     let name = CStr::from_ptr(phdr.dlpi_name).to_string_lossy();
-    if name.contains("libminecraftpe") {
+    if name.ends_with("libminecraftpe.so") {
         if phdr.dlpi_phnum == 0 {
             return 0;
         }
