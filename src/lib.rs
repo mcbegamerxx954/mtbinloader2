@@ -1,10 +1,10 @@
-use std::sync::OnceLock;
+use std::{mem::MaybeUninit, pin::Pin, sync::OnceLock};
 mod aasset;
 mod hooking;
 mod plthook;
 use crate::plthook::replace_plt_functions;
 use core::mem::transmute;
-use cxx::CxxString;
+// use cxx::CxxString;
 use hooking::{setup_hook, unsetup_hook, BACKUP_LEN};
 use libc::c_void;
 use lightningscanner::Scanner;
@@ -59,7 +59,10 @@ pub fn setup_logging() {
         android_logger::Config::default().with_max_level(log::LevelFilter::Trace),
     );
 }
-#[ctor::ctor]
+//#[ctor::ctor]
+//#[no_mangle]
+ctor::declarative::ctor! {
+#[ctor]
 fn main() {
     setup_logging();
     log::info!("Starting");
@@ -87,6 +90,7 @@ fn main() {
         .unwrap();
     log::info!("hooking aasset");
     hook_aaset();
+}
 }
 fn find_signatures(signatures: &[&str], range: MapRange) -> Option<*const u8> {
     for sig in signatures {
@@ -224,4 +228,105 @@ unsafe fn get_load(packm_ptr: *mut c_void) -> RpmLoadFn {
     // Now we offset by 2 to get load function and deref again
     // and then we transmute into a function pointer
     transmute::<*const u8, RpmLoadFn>(*vptr.offset(2))
+}
+
+#[repr(C)]
+pub struct CxxString {
+    _private: [u8; 0],
+    _pinned: core::marker::PhantomData<core::marker::PhantomPinned>,
+}
+impl CxxString {
+    pub fn as_ptr(&self) -> *const u8 {
+        unsafe { string_data(self) }
+    }
+    pub fn len(&self) -> usize {
+        unsafe { string_length(self) }
+    }
+    pub fn as_bytes(&self) -> &[u8] {
+        let data = self.as_ptr();
+        let len = self.len();
+        unsafe { core::slice::from_raw_parts(data, len) }
+    }
+    pub fn clear(self: Pin<&mut Self>) {
+        unsafe { string_clear(self) }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn push_bytes(self: Pin<&mut Self>, bytes: &[u8]) {
+        unsafe { string_push(self, bytes.as_ptr(), bytes.len()) }
+    }
+
+    pub fn reserve(self: Pin<&mut Self>, additional: usize) {
+        let new_cap = self
+            .len()
+            .checked_add(additional)
+            .expect("CxxString capacity overflow");
+        unsafe { string_reserve_total(self, new_cap) }
+    }
+}
+
+extern "C" {
+    #[link_name = "cxx_string$init"]
+    fn string_init(this: &mut MaybeUninit<CxxString>, ptr: *const u8, len: usize);
+    #[link_name = "cxx_string$destroy"]
+    fn string_destroy(this: &mut MaybeUninit<CxxString>);
+    #[link_name = "cxx_string$reserve_total"]
+    fn string_reserve_total(this: Pin<&mut CxxString>, new_cap: usize);
+    #[link_name = "cxx_string$clear"]
+    fn string_clear(this: Pin<&mut CxxString>);
+    #[link_name = "cxx_string$length"]
+    fn string_length(this: &CxxString) -> usize;
+    #[link_name = "cxx_string$data"]
+    fn string_data(this: &CxxString) -> *const u8;
+    #[link_name = "cxx_string$push"]
+    fn string_push(this: Pin<&mut CxxString>, ptr: *const u8, len: usize);
+}
+
+#[repr(C)]
+pub struct StackString {
+    // Static assertions in cxx.cc validate that this is large enough and
+    // aligned enough.
+    space: MaybeUninit<[usize; 8]>,
+}
+
+/// This is a small copy of the cxx crate's StackString, we need this
+/// to avoid some overhead
+impl StackString {
+    pub fn new() -> Self {
+        StackString {
+            space: MaybeUninit::uninit(),
+        }
+    }
+
+    pub unsafe fn init(&mut self, value: impl AsRef<[u8]>) -> Pin<&mut CxxString> {
+        let value = value.as_ref();
+        unsafe {
+            let this = &mut *self.space.as_mut_ptr().cast::<MaybeUninit<CxxString>>();
+            string_init(this, value.as_ptr(), value.len());
+            Pin::new_unchecked(&mut *this.as_mut_ptr())
+        }
+    }
+    pub unsafe fn get_ptr(&mut self) -> Pin<&mut CxxString> {
+        unsafe {
+            let this = &mut *self.space.as_mut_ptr().cast::<MaybeUninit<CxxString>>();
+            Pin::new_unchecked(&mut *this.as_mut_ptr())
+        }
+    }
+
+    pub unsafe fn get_ptr_safe(&self) -> Pin<&CxxString> {
+        unsafe {
+            let this = &*self.space.as_ptr().cast::<MaybeUninit<CxxString>>();
+            Pin::new_unchecked(&*this.as_ptr())
+        }
+    }
+}
+
+impl Drop for StackString {
+    fn drop(&mut self) {
+        unsafe {
+            let this = &mut *self.space.as_mut_ptr().cast::<MaybeUninit<CxxString>>();
+            string_destroy(this);
+        }
+    }
 }

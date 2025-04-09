@@ -1,4 +1,4 @@
-use crate::ResourceLocation;
+use crate::{ResourceLocation, StackString};
 use libc::{off64_t, off_t};
 use materialbin::{CompiledMaterialDefinition, MinecraftVersion};
 use ndk::asset::Asset;
@@ -9,18 +9,21 @@ use std::{
     collections::HashMap,
     ffi::{CStr, OsStr},
     io::{self, Cursor, Read, Seek},
+    marker::{PhantomData, PhantomPinned},
     os::unix::ffi::OsStrExt,
     path::Path,
+    pin::Pin,
     sync::{Mutex, OnceLock},
 };
 
 // This makes me feel wrong... but all we will do is compare the pointer
 // and the struct will be used in a mutex so i guess this is safe??
+type CxxBuffer<'a> = Pin<Box<CxxBytes<'a>>>;
 #[derive(PartialEq, Eq, Hash)]
 struct AAssetPtr(*const ndk_sys::AAsset);
 unsafe impl Send for AAssetPtr {}
 static MC_VERSION: OnceLock<Option<MinecraftVersion>> = OnceLock::new();
-static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
+static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<CxxBuffer>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 // Im very sorry but its just that AssetManager is so shitty to work with
 // i cant handle how randomly it breaks
@@ -83,7 +86,9 @@ pub(crate) unsafe fn asset_open(
     ];
     for replacement in replacement_list {
         if let Ok(file) = c_path.strip_prefix(replacement.0) {
-            cxx::let_cxx_string!(cxx_out = "");
+            let mut cxx_storage = CxxBytes::new();
+            let mut cxx_out = cxx_storage.string.get_ptr();
+            //            cxx::let_cxx_string!(cxx_out = "");
             let loadfn = match crate::PACK_MANAGER.get() {
                 Some(ptr) => ptr,
                 None => {
@@ -113,10 +118,10 @@ pub(crate) unsafe fn asset_open(
             let buffer = if os_filename.as_encoded_bytes().ends_with(b".material.bin") {
                 match process_material(man, cxx_out.as_bytes()) {
                     Some(updated) => updated,
-                    None => cxx_out.as_bytes().to_vec(),
+                    None => cxx_storage,
                 }
             } else {
-                cxx_out.as_bytes().to_vec()
+                cxx_storage
             };
             let mut wanted_lock = WANTED_ASSETS.lock().unwrap();
             wanted_lock.insert(AAssetPtr(aasset), Cursor::new(buffer));
@@ -126,7 +131,7 @@ pub(crate) unsafe fn asset_open(
     }
     return aasset;
 }
-fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
+fn process_material<'a, 'e>(man: *mut AAssetManager, data: &'a [u8]) -> Option<CxxBuffer<'e>> {
     let mcver = MC_VERSION.get_or_init(|| {
         let pointer = std::ptr::NonNull::new(man).unwrap();
         let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
@@ -146,12 +151,15 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         if version == mcver {
             return None;
         }
-        let mut output = Vec::with_capacity(data.len());
+        //        let mut output = Vec::with_capacity(data.len());
+        let mut output_storage = CxxBytes::new();
+        let mut output = unsafe { output_storage.string.get_ptr() };
+        output.as_mut().reserve(data.len());
         if let Err(e) = material.write(&mut output, mcver) {
             log::trace!("[version] Write error: {e}");
             return None;
         }
-        return Some(output);
+        return Some(output_storage);
     }
 
     None
@@ -209,7 +217,7 @@ pub(crate) unsafe fn asset_length(aasset: *mut AAsset) -> off_t {
         Some(file) => file,
         None => return ndk_sys::AAsset_getLength(aasset),
     };
-    file.get_ref().len() as off_t
+    CxxBytes::len(file.get_ref()) as off_t
 }
 
 pub(crate) unsafe fn asset_length64(aasset: *mut AAsset) -> off64_t {
@@ -218,7 +226,7 @@ pub(crate) unsafe fn asset_length64(aasset: *mut AAsset) -> off64_t {
         Some(file) => file,
         None => return ndk_sys::AAsset_getLength64(aasset),
     };
-    file.get_ref().len() as off64_t
+    CxxBytes::len(file.get_ref()) as off64_t
 }
 
 pub(crate) unsafe fn asset_remaining(aasset: *mut AAsset) -> off_t {
@@ -227,7 +235,7 @@ pub(crate) unsafe fn asset_remaining(aasset: *mut AAsset) -> off_t {
         Some(file) => file,
         None => return ndk_sys::AAsset_getRemainingLength(aasset),
     };
-    (file.get_ref().len() - file.position() as usize) as off_t
+    (CxxBytes::len(file.get_ref()) - file.position() as usize) as off_t
 }
 
 pub(crate) unsafe fn asset_remaining64(aasset: *mut AAsset) -> off64_t {
@@ -236,7 +244,7 @@ pub(crate) unsafe fn asset_remaining64(aasset: *mut AAsset) -> off64_t {
         Some(file) => file,
         None => return ndk_sys::AAsset_getRemainingLength64(aasset),
     };
-    (file.get_ref().len() - file.position() as usize) as off64_t
+    (CxxBytes::len(file.get_ref()) - file.position() as usize) as off64_t
 }
 
 pub(crate) unsafe fn asset_close(aasset: *mut AAsset) {
@@ -252,8 +260,13 @@ pub(crate) unsafe fn asset_get_buffer(aasset: *mut AAsset) -> *const libc::c_voi
         Some(file) => file,
         None => return ndk_sys::AAsset_getBuffer(aasset),
     };
-    // Lets hope this does not go boom boom
-    file.get_mut().as_mut_ptr().cast()
+    // Garbage
+    file.get_ref()
+        .string
+        .get_ptr_safe()
+        .as_bytes()
+        .as_ptr()
+        .cast()
 }
 
 pub(crate) unsafe fn asset_fd_dummy(
@@ -294,7 +307,7 @@ pub(crate) unsafe fn asset_is_alloc(aasset: *mut AAsset) -> libc::c_int {
     }
 }
 
-fn seek_facade(offset: i64, whence: libc::c_int, file: &mut Cursor<Vec<u8>>) -> i64 {
+fn seek_facade(offset: i64, whence: libc::c_int, file: &mut Cursor<CxxBuffer>) -> i64 {
     let offset = match whence {
         libc::SEEK_SET => {
             //Lets check this so we dont mess up
@@ -326,5 +339,42 @@ fn seek_facade(offset: i64, whence: libc::c_int, file: &mut Cursor<Vec<u8>>) -> 
             log::error!("aasset seek failed: {err}");
             -1
         }
+    }
+}
+struct CxxBytes<'a> {
+    string: StackString,
+    __phantom: PhantomData<&'a PhantomPinned>,
+}
+impl<'a> CxxBytes<'a> {
+    fn new() -> Pin<Box<Self>> {
+        let mut pin = Box::pin(Self {
+            string: StackString::new(),
+            __phantom: PhantomData::default(),
+        });
+        unsafe { pin.string.init("") };
+        pin
+    }
+    fn len(pinned: &Pin<Box<Self>>) -> usize {
+        unsafe { pinned.string.get_ptr_safe().len() }
+    }
+}
+impl<'a> AsRef<[u8]> for Pin<Box<CxxBytes<'a>>> {
+    fn as_ref(&self) -> &[u8] {
+        unsafe {
+            let dumbass = self.string.get_ptr_safe();
+            let bytes = dumbass.as_bytes();
+            // God will not forgive me
+            std::mem::transmute::<&[u8], &'a [u8]>(bytes)
+        }
+    }
+}
+impl std::io::Write for Pin<&mut crate::CxxString> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.as_mut().push_bytes(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }

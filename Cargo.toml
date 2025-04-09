@@ -6,8 +6,7 @@ edition = "2021"
 [dependencies]
 android_logger = { version = "0.14.1", default-features = false }
 clear-cache = { git = "https://github.com/mcbegamerxx954/clear-cache/", version = "0.1.1" }
-ctor = "0.2.8"
-cxx = "1.0.128"
+ctor = { version = "0.4.1", default-features = false }
 libc = "0.2.159"
 lightningscanner = "1.0.2"
 log = "0.4.22"
