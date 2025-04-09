@@ -24,6 +24,12 @@ const RPMC_PATTERNS: [&str; 1] = [
     //1.19.50-1.21.44
     "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
 ];
+// Ty crackedmatter
+#[cfg(target_arch = "x86_64")]
+const RPMC_PATTERNS: [&str; 2] = [
+    "55 41 57 41 56 41 55 41 54 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E",
+    "55 41 57 41 56 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E",
+];
 // A opaque object to ResourceLocation
 #[repr(C)]
 pub struct ResourceLocation {
