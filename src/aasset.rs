@@ -95,7 +95,7 @@ pub(crate) unsafe fn asset_open(
             let packm_ptr = crate::PACKM_PTR.get().unwrap();
             let fpath = CString::new(file_path).unwrap();
             let resource_loc = ResourceLocation::from_str(&fpath);
-            log::info!("loading rpck file: {}", &file_path);
+            log::info!("loading rpck file: {:?}", &fpath);
             if packm_ptr.0.is_null() {
                 log::error!("ResourcePackManager ptr is null");
                 return aasset;

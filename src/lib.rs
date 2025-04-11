@@ -39,7 +39,7 @@ pub struct ResourceLocation {
 impl ResourceLocation {
     // Create one from a string, copying it
     pub fn from_str(str: &CStr) -> *mut ResourceLocation {
-        unsafe { resource_location_init(str.as_ptr(), str.len()) }
+        unsafe { resource_location_init(str.as_ptr(), str.count_bytes()) }
     }
     // You must never use this struct again once this is called
     pub unsafe fn free(loc: *mut ResourceLocation) {
