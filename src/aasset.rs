@@ -7,7 +7,7 @@ use once_cell::sync::Lazy;
 use scroll::Pread;
 use std::{
     collections::HashMap,
-    ffi::{CStr, OsStr},
+    ffi::{CStr, CString, OsStr},
     io::{self, Cursor, Read, Seek},
     os::unix::ffi::OsStrExt,
     path::Path,
@@ -93,6 +93,7 @@ pub(crate) unsafe fn asset_open(
             };
             let file_path = replacement.1.to_string() + file.to_str().unwrap();
             let packm_ptr = crate::PACKM_PTR.get().unwrap();
+            let augh = CString::new(packm_ptr).unwrap();
             let resource_loc = ResourceLocation::from_str(&file_path);
             log::info!("loading rpck file: {}", &file_path);
             if packm_ptr.0.is_null() {

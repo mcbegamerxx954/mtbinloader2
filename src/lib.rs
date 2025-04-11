@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{ffi::CStr, sync::OnceLock};
 mod aasset;
 mod hooking;
 mod plthook;
@@ -38,7 +38,7 @@ pub struct ResourceLocation {
 }
 impl ResourceLocation {
     // Create one from a string, copying it
-    pub fn from_str(str: &str) -> *mut ResourceLocation {
+    pub fn from_str(str: &CStr) -> *mut ResourceLocation {
         unsafe { resource_location_init(str.as_ptr(), str.len()) }
     }
     // You must never use this struct again once this is called
