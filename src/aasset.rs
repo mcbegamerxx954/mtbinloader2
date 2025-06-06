@@ -6,11 +6,12 @@ use ndk_sys::{AAsset, AAssetManager};
 use once_cell::sync::Lazy;
 use scroll::Pread;
 use std::{
+    borrow::Cow,
     collections::HashMap,
     ffi::{CStr, CString, OsStr},
     io::{self, Cursor, Read, Seek},
     os::unix::ffi::OsStrExt,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
 
@@ -71,18 +72,18 @@ pub(crate) unsafe fn asset_open(
         log::warn!("Path had no filename: {c_path:?}");
         return aasset;
     };
-
+    let stripped = match c_path.strip_prefix("assets/") {
+        Ok(yay) => yay,
+        Err(e) => c_path,
+    };
     let replacement_list = [
-        ("assets/gui/dist/hbui/", "hbui/"),
-        ("assets/renderer/", "renderer/"),
-        ("assets/resource_packs/vanilla/cameras", "vanilla_cameras/"),
-        // Old paths, should not hit perf too bad
         ("gui/dist/hbui/", "hbui/"),
+        ("skin_packs/persona", "custom_persona"),
         ("renderer/", "renderer/"),
         ("resource_packs/vanilla/cameras", "vanilla_cameras/"),
     ];
     for replacement in replacement_list {
-        if let Ok(file) = c_path.strip_prefix(replacement.0) {
+        if let Ok(file) = stripped.strip_prefix(replacement.0) {
             cxx::let_cxx_string!(cxx_out = "");
             let loadfn = match crate::PACK_MANAGER.get() {
                 Some(ptr) => ptr,
@@ -91,9 +92,10 @@ pub(crate) unsafe fn asset_open(
                     return aasset;
                 }
             };
-            let file_path = replacement.1.to_string() + file.to_str().unwrap();
+            let mut arraybuf = [0; 128];
+            let file_path = opt_path_join(&mut arraybuf, &[Path::new(replacement.1), file]);
             let packm_ptr = crate::PACKM_PTR.get().unwrap();
-            let fpath = CString::new(file_path).unwrap();
+            let fpath = CString::new(file_path.as_os_str().as_encoded_bytes()).unwrap();
             let resource_loc = ResourceLocation::from_str(&fpath);
             log::info!("loading rpck file: {:?}", &fpath);
             if packm_ptr.0.is_null() {
@@ -126,6 +128,29 @@ pub(crate) unsafe fn asset_open(
         }
     }
     return aasset;
+}
+/// Join paths without allocating if possible, or
+/// if the joined path does not fit the buffer then just
+/// allocate instead
+fn opt_path_join<'a>(bytes: &'a mut [u8; 128], paths: &[&Path]) -> Cow<'a, Path> {
+    let total_len: usize = paths.iter().map(|p| p.as_os_str().len()).sum();
+    if total_len > bytes.len() {
+        // panic!("fuck");
+        let mut pathbuf = PathBuf::new();
+        for path in paths {
+            pathbuf.push(path);
+        }
+        return Cow::Owned(pathbuf);
+    }
+
+    let mut len = 0;
+    for path in paths {
+        let osstr = path.as_os_str().as_bytes();
+        (bytes[len..len + osstr.len()]).copy_from_slice(osstr);
+        len += osstr.len();
+    }
+    let osstr = OsStr::from_bytes(&bytes[..len]);
+    Cow::Borrowed(Path::new(osstr))
 }
 fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
     let mcver = MC_VERSION.get_or_init(|| {
