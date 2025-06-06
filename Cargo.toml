@@ -20,6 +20,7 @@ plt-rs = "0.3.0"
 proc-maps = { version = "0.3.2", default-features = false }
 region = "3.0.2"
 scroll = "0.12.0"
+tinypatscan = { git = "https://github.com/mcbegamerxx954/tinypatscan", version = "0.1.1" }
 
 [profile.release]
 # This lib gets called from nowhere and so unwinding = crash

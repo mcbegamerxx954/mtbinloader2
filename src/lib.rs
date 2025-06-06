@@ -10,25 +10,27 @@ use libc::c_void;
 use lightningscanner::Scanner;
 use plt_rs::DynamicLibrary;
 use proc_maps::MapRange;
-
+use tinypatscan::Pattern;
 // Byte pattern of ResourcePackManager constructor
 #[cfg(target_arch = "aarch64")]
-const RPMC_PATTERNS: [&str; 2] = [
+const RPMC_PATTERNS: [Pattern<80>; 2] = [
     //1.19.50-1.21.44
-    "FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9",
+    Pattern::from_str("FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"),
     //1.21.60.21preview
-    "FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4",
+    Pattern::from_str("FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4"),
 ];
 #[cfg(target_arch = "arm")]
-const RPMC_PATTERNS: [&str; 1] = [
+const RPMC_PATTERNS: [Pattern<80>; 1] = [
     //1.19.50-1.21.44
-    "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
+    Pattern::from_str(
+        "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
+    ),
 ];
 // Ty crackedmatter
 #[cfg(target_arch = "x86_64")]
-const RPMC_PATTERNS: [&str; 2] = [
-    "55 41 57 41 56 41 55 41 54 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E",
-    "55 41 57 41 56 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E",
+const RPMC_PATTERNS: [Pattern<80>; 2] = [
+    Pattern::from_str("55 41 57 41 56 41 55 41 54 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
+    Pattern::from_str("55 41 57 41 56 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
 ];
 // A opaque object to ResourceLocation
 #[repr(C)]
@@ -88,15 +90,18 @@ fn main() {
     log::info!("hooking aasset");
     hook_aaset();
 }
-fn find_signatures(signatures: &[&str], range: MapRange) -> Option<*const u8> {
+fn find_signatures(signatures: &[Pattern<80>], range: MapRange) -> Option<*const u8> {
     for sig in signatures {
-        let scanner = Scanner::new(sig);
-        let addr = unsafe { scanner.find(None, range.start() as *const u8, range.size()) };
-        let addr = addr.get_addr();
-        if addr.is_null() {
-            log::error!("cannot find signature");
-            continue;
-        }
+        let libbytes =
+            unsafe { core::slice::from_raw_parts(range.start() as *const u8, range.size()) };
+        let addr = sig.simd_search(libbytes);
+        let addr = match addr {
+            Some(val) => libbytes[val..].as_ptr(),
+            None => {
+                log::error!("cannot find signature");
+                continue;
+            }
+        };
         #[cfg(target_arch = "arm")]
         // Needed for reasons
         let addr = unsafe { addr.offset(1) };
