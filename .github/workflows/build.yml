@@ -26,5 +26,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mtbinloader2-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/libmtbinloader2.so
+          path: target/${{ matrix.target }}/githubci/libmtbinloader2.so
 
