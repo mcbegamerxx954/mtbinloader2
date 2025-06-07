@@ -4,9 +4,9 @@ version = "0.1.7"
 edition = "2021"
 
 [dependencies]
-android_logger = { version = "0.14.1", default-features = false }
+android_logger = { version = "0.15.0", default-features = false }
 clear-cache = { git = "https://github.com/mcbegamerxx954/clear-cache/", version = "0.1.1" }
-ctor = "0.2.8"
+ctor = "0.4.1"
 cxx = "1.0.128"
 libc = "0.2.159"
 lightningscanner = "1.0.2"
@@ -24,6 +24,14 @@ tinypatscan = { git = "https://github.com/mcbegamerxx954/tinypatscan", version =
 
 [profile.release]
 # This lib gets called from nowhere and so unwinding = crash
+panic = "abort"
+
+[profile.githubci]
+inherits = "release"
+strip = true
+lto = true 
+codegen-units = 1 
+debug = false
 panic = "abort"
 
 [lib]

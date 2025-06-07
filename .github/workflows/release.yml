@@ -25,7 +25,7 @@ jobs:
         with:
           target: ${{ matrix.target }} 
       - name: build
-        run: cargo build --release
+        run: cargo build --profile githubci
         env:
           CARGO_PROFILE_RELEASE_LTO: "fat"
           CARGO_PROFILE_RELEASE_STRIP: "symbols"
