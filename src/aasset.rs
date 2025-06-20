@@ -101,7 +101,7 @@ pub(crate) unsafe fn asset_open(
             let fpath = match CString::new(file_path.as_os_str().as_encoded_bytes()) {
                 Ok(yay) => yay,
                 Err(e) => {
-                    log::warn!("Something went very very wrong (Path to CString): {e}", e);
+                    log::warn!("Something went very very wrong (Path to CString): {e}");
                     return aasset;
                 }
             };
