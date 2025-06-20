@@ -9,7 +9,6 @@ clear-cache = { git = "https://github.com/mcbegamerxx954/clear-cache/", version 
 ctor = "0.4.1"
 cxx = "1.0.128"
 libc = "0.2.159"
-lightningscanner = "1.0.2"
 log = "0.4.22"
 materialbin = { git = "https://github.com/mcbegamerxx954/materialbin", version = "0.1.1" }
 ndk = "0.9.0"

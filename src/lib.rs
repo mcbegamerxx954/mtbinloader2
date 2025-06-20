@@ -6,8 +6,8 @@ use crate::plthook::replace_plt_functions;
 use core::mem::transmute;
 use cxx::CxxString;
 use hooking::{setup_hook, unsetup_hook, BACKUP_LEN};
-use libc::c_void;
-use lightningscanner::Scanner;
+use libc::{android_set_abort_message, c_void};
+//use lightningscanner::Scanner;
 use plt_rs::DynamicLibrary;
 use proc_maps::MapRange;
 use tinypatscan::Pattern;
@@ -66,7 +66,8 @@ fn main() {
     setup_logging();
     log::info!("Starting");
     let self_pid = unsafe { libc::getpid() };
-    let procmaps = proc_maps::get_process_maps(self_pid).unwrap();
+    let procmaps =
+        proc_maps::get_process_maps(self_pid).expect("Your /proc/self/maps file is broken");
     let mcmap = procmaps
         .into_iter()
         .find(|map| {
@@ -112,20 +113,8 @@ fn find_signatures(signatures: &[Pattern<80>], range: MapRange) -> Option<*const
 // Setup asset hooks
 pub fn hook_aaset() {
     const LIBNAME: &str = "libminecraftpe";
-    let lib_entry = match find_lib(LIBNAME) {
-        Some(lib) => lib,
-        None => {
-            log::info!("Cannot find minecraftpe?");
-            panic!();
-        }
-    };
-    let dyn_lib = match DynamicLibrary::initialize(lib_entry) {
-        Ok(lib) => lib,
-        Err(e) => {
-            log::error!("failed to initilize dyn_lib: {e}");
-            panic!();
-        }
-    };
+    let lib_entry = find_lib(LIBNAME).expect("Cannot find minecraftpe");
+    let dyn_lib = DynamicLibrary::initialize(lib_entry).expect("Failed to find mc info");
     // Hook all aassetmanager functions
     replace_plt_functions(
         &dyn_lib,

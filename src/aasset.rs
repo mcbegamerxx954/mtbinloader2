@@ -34,7 +34,10 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
         }
     };
     let mut buf = Vec::with_capacity(file.length());
-    file.read_to_end(&mut buf).unwrap();
+    if let Err(e) = file.read_to_end(&mut buf) {
+        log::error!("Something is wrong with AssetManager, mc detection failed: {e}");
+        return None;
+    };
     for version in materialbin::ALL_VERSIONS {
         if buf
             .pread_with::<CompiledMaterialDefinition>(0, version)
@@ -95,7 +98,13 @@ pub(crate) unsafe fn asset_open(
             let mut arraybuf = [0; 128];
             let file_path = opt_path_join(&mut arraybuf, &[Path::new(replacement.1), file]);
             let packm_ptr = crate::PACKM_PTR.get().unwrap();
-            let fpath = CString::new(file_path.as_os_str().as_encoded_bytes()).unwrap();
+            let fpath = match CString::new(file_path.as_os_str().as_encoded_bytes()) {
+                Ok(yay) => yay,
+                Err(e) => {
+                    log::warn!("Something went very very wrong (Path to CString): {e}", e);
+                    return aasset;
+                }
+            };
             let resource_loc = ResourceLocation::from_str(&fpath);
             log::info!("loading rpck file: {:?}", &fpath);
             if packm_ptr.0.is_null() {
@@ -154,7 +163,13 @@ fn opt_path_join<'a>(bytes: &'a mut [u8; 128], paths: &[&Path]) -> Cow<'a, Path>
 }
 fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
     let mcver = MC_VERSION.get_or_init(|| {
-        let pointer = std::ptr::NonNull::new(man).unwrap();
+        let pointer = match std::ptr::NonNull::new(man) {
+            Some(yay) => yay,
+            None => {
+                log::warn!("AssetManager is null?, preposterous, mc detection failed");
+                return None;
+            }
+        };
         let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
         get_current_mcver(manager)
     });
