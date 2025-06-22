@@ -20,9 +20,14 @@ use std::{
 #[derive(PartialEq, Eq, Hash)]
 struct AAssetPtr(*const ndk_sys::AAsset);
 unsafe impl Send for AAssetPtr {}
+
+// The minecraft version we will use to port shaders to
 static MC_VERSION: OnceLock<Option<MinecraftVersion>> = OnceLock::new();
+
+// The assets we have registrered to remplace data about
 static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
 // Im very sorry but its just that AssetManager is so shitty to work with
 // i cant handle how randomly it breaks
 fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
@@ -49,8 +54,9 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
     }
     None
 }
+
+// Try to open UIText.material.bin to guess mc shader version
 fn get_uitext(man: ndk::asset::AssetManager) -> Option<Asset> {
-    // const just so its all at compile time only
     const NEW: &CStr = c"assets/renderer/materials/UIText.material.bin";
     const OLD: &CStr = c"renderer/materials/UIText.material.bin";
     for path in [NEW, OLD] {
@@ -60,7 +66,7 @@ fn get_uitext(man: ndk::asset::AssetManager) -> Option<Asset> {
     }
     None
 }
-pub(crate) unsafe fn asset_open(
+pub(crate) unsafe fn open(
     man: *mut AAssetManager,
     fname: *const libc::c_char,
     mode: libc::c_int,
@@ -71,14 +77,17 @@ pub(crate) unsafe fn asset_open(
     let raw_cstr = c_str.to_bytes();
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
+    // Extract filename
     let Some(os_filename) = c_path.file_name() else {
         log::warn!("Path had no filename: {c_path:?}");
         return aasset;
     };
+    // This is meant to strip the new "asset" folder path so we can be compatible with other versions
     let stripped = match c_path.strip_prefix("assets/") {
         Ok(yay) => yay,
         Err(e) => c_path,
     };
+    // Folder paths to replace and with what
     let replacement_list = [
         ("gui/dist/hbui/", "hbui/"),
         ("skin_packs/persona", "custom_persona"),
@@ -86,6 +95,7 @@ pub(crate) unsafe fn asset_open(
         ("resource_packs/vanilla/cameras", "vanilla_cameras/"),
     ];
     for replacement in replacement_list {
+        // Remove the prefix we want to change
         if let Ok(file) = stripped.strip_prefix(replacement.0) {
             cxx::let_cxx_string!(cxx_out = "");
             let loadfn = match crate::PACK_MANAGER.get() {
@@ -98,6 +108,7 @@ pub(crate) unsafe fn asset_open(
             let mut arraybuf = [0; 128];
             let file_path = opt_path_join(&mut arraybuf, &[Path::new(replacement.1), file]);
             let packm_ptr = crate::PACKM_PTR.get().unwrap();
+            // We allocate here but its alright
             let fpath = match CString::new(file_path.as_os_str().as_encoded_bytes()) {
                 Ok(yay) => yay,
                 Err(e) => {
@@ -111,11 +122,7 @@ pub(crate) unsafe fn asset_open(
                 log::error!("ResourcePackManager ptr is null");
                 return aasset;
             }
-            loadfn(
-                packm_ptr.0,
-                resource_loc,
-                cxx_out.as_mut().get_unchecked_mut(),
-            );
+            loadfn(packm_ptr.0, resource_loc, cxx_out.as_mut());
             // Free resource location
             ResourceLocation::free(resource_loc);
             if cxx_out.is_empty() {
@@ -197,11 +204,7 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
 
     None
 }
-pub(crate) unsafe fn asset_seek64(
-    aasset: *mut AAsset,
-    off: off64_t,
-    whence: libc::c_int,
-) -> off64_t {
+pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_int) -> off64_t {
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -210,7 +213,7 @@ pub(crate) unsafe fn asset_seek64(
     seek_facade(off, whence, file) as off64_t
 }
 
-pub(crate) unsafe fn asset_seek(aasset: *mut AAsset, off: off_t, whence: libc::c_int) -> off_t {
+pub(crate) unsafe fn seek(aasset: *mut AAsset, off: off_t, whence: libc::c_int) -> off_t {
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -222,7 +225,7 @@ pub(crate) unsafe fn asset_seek(aasset: *mut AAsset, off: off_t, whence: libc::c
     seek_facade(off.into(), whence, file) as off_t
 }
 
-pub(crate) unsafe fn asset_read(
+pub(crate) unsafe fn read(
     aasset: *mut AAsset,
     buf: *mut libc::c_void,
     count: libc::size_t,
@@ -244,7 +247,7 @@ pub(crate) unsafe fn asset_read(
     read_total as libc::c_int
 }
 
-pub(crate) unsafe fn asset_length(aasset: *mut AAsset) -> off_t {
+pub(crate) unsafe fn len(aasset: *mut AAsset) -> off_t {
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -253,7 +256,7 @@ pub(crate) unsafe fn asset_length(aasset: *mut AAsset) -> off_t {
     file.get_ref().len() as off_t
 }
 
-pub(crate) unsafe fn asset_length64(aasset: *mut AAsset) -> off64_t {
+pub(crate) unsafe fn len64(aasset: *mut AAsset) -> off64_t {
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -262,7 +265,7 @@ pub(crate) unsafe fn asset_length64(aasset: *mut AAsset) -> off64_t {
     file.get_ref().len() as off64_t
 }
 
-pub(crate) unsafe fn asset_remaining(aasset: *mut AAsset) -> off_t {
+pub(crate) unsafe fn rem(aasset: *mut AAsset) -> off_t {
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -271,7 +274,7 @@ pub(crate) unsafe fn asset_remaining(aasset: *mut AAsset) -> off_t {
     (file.get_ref().len() - file.position() as usize) as off_t
 }
 
-pub(crate) unsafe fn asset_remaining64(aasset: *mut AAsset) -> off64_t {
+pub(crate) unsafe fn rem64(aasset: *mut AAsset) -> off64_t {
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -280,14 +283,14 @@ pub(crate) unsafe fn asset_remaining64(aasset: *mut AAsset) -> off64_t {
     (file.get_ref().len() - file.position() as usize) as off64_t
 }
 
-pub(crate) unsafe fn asset_close(aasset: *mut AAsset) {
+pub(crate) unsafe fn close(aasset: *mut AAsset) {
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     if wanted_assets.remove(&AAssetPtr(aasset)).is_none() {
         ndk_sys::AAsset_close(aasset);
     }
 }
 
-pub(crate) unsafe fn asset_get_buffer(aasset: *mut AAsset) -> *const libc::c_void {
+pub(crate) unsafe fn get_buffer(aasset: *mut AAsset) -> *const libc::c_void {
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -297,7 +300,7 @@ pub(crate) unsafe fn asset_get_buffer(aasset: *mut AAsset) -> *const libc::c_voi
     file.get_mut().as_mut_ptr().cast()
 }
 
-pub(crate) unsafe fn asset_fd_dummy(
+pub(crate) unsafe fn fd_dummy(
     aasset: *mut AAsset,
     out_start: *mut off_t,
     out_len: *mut off_t,
@@ -312,7 +315,7 @@ pub(crate) unsafe fn asset_fd_dummy(
     }
 }
 
-pub(crate) unsafe fn asset_fd_dummy64(
+pub(crate) unsafe fn fd_dummy64(
     aasset: *mut AAsset,
     out_start: *mut off64_t,
     out_len: *mut off64_t,
@@ -327,7 +330,7 @@ pub(crate) unsafe fn asset_fd_dummy64(
     }
 }
 
-pub(crate) unsafe fn asset_is_alloc(aasset: *mut AAsset) -> libc::c_int {
+pub(crate) unsafe fn is_alloc(aasset: *mut AAsset) -> libc::c_int {
     let wanted_assets = WANTED_ASSETS.lock().unwrap();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => false as libc::c_int,

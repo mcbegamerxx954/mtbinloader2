@@ -1,13 +1,11 @@
-use std::{ffi::CStr, sync::OnceLock};
+use std::{ffi::CStr, pin::Pin, sync::OnceLock};
 mod aasset;
-mod hooking;
 mod plthook;
 use crate::plthook::replace_plt_functions;
+use bhook::hook_fn;
 use core::mem::transmute;
 use cxx::CxxString;
-use hooking::{setup_hook, unsetup_hook, BACKUP_LEN};
 use libc::{android_set_abort_message, c_void};
-//use lightningscanner::Scanner;
 use plt_rs::DynamicLibrary;
 use proc_maps::MapRange;
 use tinypatscan::Pattern;
@@ -65,41 +63,42 @@ pub fn setup_logging() {
 fn main() {
     setup_logging();
     log::info!("Starting");
-    let self_pid = unsafe { libc::getpid() };
+    let self_pid = std::process::id();
     let procmaps =
-        proc_maps::get_process_maps(self_pid).expect("Your /proc/self/maps file is broken");
+        proc_maps::get_process_maps(self_pid as i32).expect("Your /proc/self/maps file is broken");
     let mcmap = procmaps
         .into_iter()
         .find(|map| {
-            map.filename().is_some_and(|f| {
-                f.file_name()
-                    .is_some_and(|f| f.as_encoded_bytes().ends_with(b"libminecraftpe.so"))
-            }) && map.is_exec()
+            map.filename()
+                .is_some_and(|f| f.ends_with("libminecraftpe.so"))
+                && map.is_exec()
         })
         .unwrap();
     // Pattern taken from materialbinloader
-    let addr = find_signatures(&RPMC_PATTERNS, mcmap).expect("No signsture was found");
-    log::info!("hooking rpm");
-    let result = unsafe { setup_hook(addr as *mut _, hook_rpm_ctor as *const _) };
-    // Unwrapping is safe because this only happens once
-    BACKUP
-        .set(MemBackup {
-            backup_bytes: result,
-            original_func_ptr: addr as *mut _,
-        })
-        .unwrap();
-    log::info!("hooking aasset");
+    let addr = find_signatures(&RPMC_PATTERNS, mcmap).expect("No signature was found");
+    log::info!("Hooking ResourcePackManager constructor");
+    unsafe {
+        rpm_ctor::hook_address(addr as *mut u8);
+    };
+    log::info!("Hooking AssetManager functions");
     hook_aaset();
 }
 fn find_signatures(signatures: &[Pattern<80>], range: MapRange) -> Option<*const u8> {
     for sig in signatures {
+        // We reinterpret the module code range as a slice
         let libbytes =
             unsafe { core::slice::from_raw_parts(range.start() as *const u8, range.size()) };
-        let addr = sig.simd_search(libbytes);
+
+        // Arm does not benefit from simd so we use the scalar approach
+        let addr = if cfg!(target_arch = "arm") {
+            sig.search(libbytes)
+        } else {
+            sig.simd_search(libbytes)
+        };
         let addr = match addr {
             Some(val) => libbytes[val..].as_ptr(),
             None => {
-                log::error!("cannot find signature");
+                log::error!("Cannot find signature");
                 continue;
             }
         };
@@ -110,42 +109,37 @@ fn find_signatures(signatures: &[Pattern<80>], range: MapRange) -> Option<*const
     }
     None
 }
+
+macro_rules! cast_array {
+    ($($func_name:literal -> $hook:expr),
+        *,
+    ) => {
+        [
+            $(($func_name, $hook as *const u8)),*,
+        ]
+    }
+}
 // Setup asset hooks
 pub fn hook_aaset() {
-    const LIBNAME: &str = "libminecraftpe";
-    let lib_entry = find_lib(LIBNAME).expect("Cannot find minecraftpe");
+    let lib_entry = find_lib("libminecraftpe").expect("Cannot find minecraftpe");
     let dyn_lib = DynamicLibrary::initialize(lib_entry).expect("Failed to find mc info");
+    let asset_fn_list = cast_array! {
+        "AAssetManager_open" -> aasset::open,
+        "AAsset_read" -> aasset::read,
+        "AAsset_close" -> aasset::close,
+        "AAsset_seek" -> aasset::seek,
+        "AAsset_seek64" -> aasset::seek64,
+        "AAsset_getLength" -> aasset::len,
+        "AAsset_getLength64" -> aasset::len64,
+        "AAsset_getRemainingLength" -> aasset::rem,
+        "AAsset_getRemainingLength64" -> aasset::rem64,
+        "AAsset_openFileDescriptor" -> aasset::fd_dummy,
+        "AAsset_openFileDescriptor64" -> aasset::fd_dummy64,
+        "AAsset_getBuffer" -> aasset::get_buffer,
+        "AAsset_isAllocated" -> aasset::is_alloc,
+    };
     // Hook all aassetmanager functions
-    replace_plt_functions(
-        &dyn_lib,
-        [
-            ("AAssetManager_open", aasset::asset_open as *const _),
-            ("AAsset_read", aasset::asset_read as *const _),
-            ("AAsset_close", aasset::asset_close as *const _),
-            ("AAsset_seek", aasset::asset_seek as *const _),
-            ("AAsset_seek64", aasset::asset_seek64 as *const _),
-            ("AAsset_getLength", aasset::asset_length as *const _),
-            ("AAsset_getLength64", aasset::asset_length64 as *const _),
-            (
-                "AAsset_getRemainingLength",
-                aasset::asset_remaining as *const _,
-            ),
-            (
-                "AAsset_getRemainingLength64",
-                aasset::asset_remaining64 as *const _,
-            ),
-            (
-                "AAsset_openFileDescriptor",
-                aasset::asset_fd_dummy as *const _,
-            ),
-            (
-                "AAsset_openFileDescriptor64",
-                aasset::asset_fd_dummy64 as *const _,
-            ),
-            ("AAsset_getBuffer", aasset::asset_get_buffer as *const _),
-            ("AAsset_isAllocated", aasset::asset_is_alloc as *const _),
-        ],
-    );
+    replace_plt_functions(&dyn_lib, asset_fn_list);
 }
 // Find minecraftpe in dlpi
 fn find_lib<'a>(target_name: &str) -> Option<plt_rs::LoadedLibrary<'a>> {
@@ -154,64 +148,32 @@ fn find_lib<'a>(target_name: &str) -> Option<plt_rs::LoadedLibrary<'a>> {
         .into_iter()
         .find(|lib| lib.name().contains(target_name))
 }
-// Backup of function ptr and its instructions
-#[derive(Debug)]
-struct MemBackup {
-    backup_bytes: [u8; BACKUP_LEN],
-    original_func_ptr: *mut u8,
-}
-
-unsafe impl Send for MemBackup {}
-unsafe impl Sync for MemBackup {}
 // Pointer to ResourcePackManager object
 #[derive(Debug)]
 pub struct ResourcePackManagerPtr(*mut c_void);
 unsafe impl Send for ResourcePackManagerPtr {}
 unsafe impl Sync for ResourcePackManagerPtr {}
 
-static BACKUP: OnceLock<MemBackup> = OnceLock::new();
 pub static PACKM_PTR: OnceLock<ResourcePackManagerPtr> = OnceLock::new();
 pub static PACK_MANAGER: OnceLock<RpmLoadFn> = OnceLock::new();
 
-#[inline(never)]
-unsafe extern "C" fn hook_rpm_ctor(
-    this: *mut c_void,
-    unk1: usize,
-    unk2: usize,
-    needs_init: bool,
-) -> *mut c_void {
+hook_fn! {
+fn rpm_ctor(this: *mut libc::c_void,unk1: usize,unk2: usize,needs_init: bool) -> *mut libc::c_void = {
     log::info!("rpm ctor called");
     let result = call_original(this, unk1, unk2, needs_init);
     // This will only run once
-    if PACKM_PTR.get().is_none() {
+    if crate::PACKM_PTR.get().is_none() {
         log::info!("RPM pointer has been obtained");
-        PACKM_PTR.set(ResourcePackManagerPtr(this)).unwrap();
-        PACK_MANAGER.set(get_load(this)).unwrap();
+        crate::PACKM_PTR.set(crate::ResourcePackManagerPtr(this)).unwrap();
+        crate::PACK_MANAGER.set(crate::get_load(this)).unwrap();
     }
     log::info!("hook exit");
     result
 }
-unsafe fn call_original(
-    this: *mut c_void,
-    unk1: usize,
-    unk2: usize,
-    needs_init: bool,
-) -> *mut c_void {
-    let backup = BACKUP.get().unwrap();
-    // We unsetup this since its a one time thing
-    // which also allows us to call the original fn
-    unsafe { unsetup_hook(backup.original_func_ptr, backup.backup_bytes) };
-    log::info!("RPMC hook is gone");
-    // c is worse in this aspect change my mind
-    let original = transmute::<
-        *mut u8,
-        unsafe extern "C" fn(*mut c_void, usize, usize, bool) -> *mut c_void,
-    >(backup.original_func_ptr);
-    let orig = original(this, unk1, unk2, needs_init);
-    log::info!("called original function");
-    orig
 }
-type RpmLoadFn = unsafe extern "C" fn(*mut c_void, *mut ResourceLocation, &mut CxxString) -> bool;
+
+type RpmLoadFn =
+    unsafe extern "C" fn(*mut c_void, *mut ResourceLocation, Pin<&mut CxxString>) -> bool;
 unsafe fn get_load(packm_ptr: *mut c_void) -> RpmLoadFn {
     // First dereference
     let vptr = *transmute::<*mut c_void, *mut *mut *const u8>(packm_ptr);
