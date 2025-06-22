@@ -67,11 +67,11 @@ fn get_uitext(man: ndk::asset::AssetManager) -> Option<Asset> {
     None
 }
 macro_rules! folder_list {
-    ($( apk: $func_name:literal -> pack: $hook:expr),
+    ($( apk: $apk_folder:literal -> pack: $pack_folder:expr),
         *,
     ) => {
         [
-            $(($func_name, $hook)),*,
+            $(($apk_folder, $pack_folder)),*,
         ]
     }
 }
