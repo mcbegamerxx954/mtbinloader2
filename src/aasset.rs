@@ -66,6 +66,15 @@ fn get_uitext(man: ndk::asset::AssetManager) -> Option<Asset> {
     }
     None
 }
+macro_rules! folder_list {
+    ($( apk: $func_name:literal -> pack: $hook:expr),
+        *,
+    ) => {
+        [
+            $(($func_name, $hook)),*,
+        ]
+    }
+}
 pub(crate) unsafe fn open(
     man: *mut AAssetManager,
     fname: *const libc::c_char,
@@ -88,12 +97,12 @@ pub(crate) unsafe fn open(
         Err(e) => c_path,
     };
     // Folder paths to replace and with what
-    let replacement_list = [
-        ("gui/dist/hbui/", "hbui/"),
-        ("skin_packs/persona", "custom_persona"),
-        ("renderer/", "renderer/"),
-        ("resource_packs/vanilla/cameras", "vanilla_cameras/"),
-    ];
+    let replacement_list = folder_list! {
+        apk: "gui/dist/hbui/" -> pack: "hbui/",
+        apk: "skin_packs/persona" -> pack: "custom_persona",
+        apk: "renderer/" -> pack: "renderer/",
+        apk: "resource_packs/vanilla/cameras" -> pack: "vanilla_cameras/",
+    };
     for replacement in replacement_list {
         // Remove the prefix we want to change
         if let Ok(file) = stripped.strip_prefix(replacement.0) {
