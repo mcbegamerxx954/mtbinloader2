@@ -99,9 +99,9 @@ pub(crate) unsafe fn open(
     // Folder paths to replace and with what
     let replacement_list = folder_list! {
         apk: "gui/dist/hbui/" -> pack: "hbui/",
-        apk: "skin_packs/persona" -> pack: "custom_persona",
+        apk: "skin_packs/persona/" -> pack: "custom_persona/",
         apk: "renderer/" -> pack: "renderer/",
-        apk: "resource_packs/vanilla/cameras" -> pack: "vanilla_cameras/",
+        apk: "resource_packs/vanilla/cameras/" -> pack: "vanilla_cameras/",
     };
     for replacement in replacement_list {
         // Remove the prefix we want to change
