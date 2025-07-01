@@ -107,7 +107,7 @@ pub(crate) unsafe fn open(
         // Remove the prefix we want to change
         if let Ok(file) = stripped.strip_prefix(replacement.0) {
             cxx::let_cxx_string!(cxx_out = "");
-            let loadfn = match crate::PACK_MANAGER.get() {
+            let loadfn = match crate::RPM_LOAD.get() {
                 Some(ptr) => ptr,
                 None => {
                     log::warn!("ResourcePackManager fn is not ready yet?");
@@ -116,16 +116,15 @@ pub(crate) unsafe fn open(
             };
             let mut arraybuf = [0; 128];
             let file_path = opt_path_join(&mut arraybuf, &[Path::new(replacement.1), file]);
-            let packm_ptr = crate::PACKM_PTR.get().unwrap();
+            let packm_ptr = crate::PACKM_OBJ.load(std::sync::atomic::Ordering::Acquire);
             let resource_loc = ResourceLocation::from_str(file_path.as_ref());
             log::info!("loading rpck file: {:#?}", &file_path);
-            if packm_ptr.0.is_null() {
+            if packm_ptr.is_null() {
                 log::error!("ResourcePackManager ptr is null");
                 return aasset;
             }
-            loadfn(packm_ptr.0, resource_loc, cxx_out.as_mut());
+            loadfn(packm_ptr, resource_loc, cxx_out.as_mut());
             // Free resource location
-            ResourceLocation::free(resource_loc);
             if cxx_out.is_empty() {
                 log::info!("File was not found");
                 return aasset;
