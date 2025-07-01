@@ -9,7 +9,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     ffi::{CStr, CString, OsStr},
-    io::{self, Cursor, Read, Seek},
+    io::{self, Cursor, Read, Seek, Write},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -117,16 +117,8 @@ pub(crate) unsafe fn open(
             let mut arraybuf = [0; 128];
             let file_path = opt_path_join(&mut arraybuf, &[Path::new(replacement.1), file]);
             let packm_ptr = crate::PACKM_PTR.get().unwrap();
-            // We allocate here but its alright
-            let fpath = match CString::new(file_path.as_os_str().as_encoded_bytes()) {
-                Ok(yay) => yay,
-                Err(e) => {
-                    log::warn!("Something went very very wrong (Path to CString): {e}");
-                    return aasset;
-                }
-            };
-            let resource_loc = ResourceLocation::from_str(&fpath);
-            log::info!("loading rpck file: {:?}", &fpath);
+            let resource_loc = ResourceLocation::from_str(file_path.as_ref());
+            log::info!("loading rpck file: {:#?}", &file_path);
             if packm_ptr.0.is_null() {
                 log::error!("ResourcePackManager ptr is null");
                 return aasset;
@@ -148,7 +140,7 @@ pub(crate) unsafe fn open(
             };
             let mut wanted_lock = WANTED_ASSETS.lock().unwrap();
             wanted_lock.insert(AAssetPtr(aasset), Cursor::new(buffer));
-            // we do not clwan cxx string because cxx ceate does that for us
+            // we do not clean cxx string because cxx crate does that for us
             return aasset;
         }
     }
@@ -157,25 +149,26 @@ pub(crate) unsafe fn open(
 /// Join paths without allocating if possible, or
 /// if the joined path does not fit the buffer then just
 /// allocate instead
-fn opt_path_join<'a>(bytes: &'a mut [u8; 128], paths: &[&Path]) -> Cow<'a, Path> {
+fn opt_path_join<'a>(bytes: &'a mut [u8; 128], paths: &[&Path]) -> Cow<'a, CStr> {
     let total_len: usize = paths.iter().map(|p| p.as_os_str().len()).sum();
-    if total_len > bytes.len() {
+    if total_len + 1 > 128 {
         // panic!("fuck");
         let mut pathbuf = PathBuf::new();
         for path in paths {
             pathbuf.push(path);
         }
-        return Cow::Owned(pathbuf);
+        let cpath = CString::new(pathbuf.into_os_string().as_encoded_bytes()).unwrap();
+        return Cow::Owned(cpath);
     }
 
-    let mut len = 0;
+    let mut writer = bytes.as_mut_slice();
     for path in paths {
         let osstr = path.as_os_str().as_bytes();
-        (bytes[len..len + osstr.len()]).copy_from_slice(osstr);
-        len += osstr.len();
+        writer.write(osstr);
     }
-    let osstr = OsStr::from_bytes(&bytes[..len]);
-    Cow::Borrowed(Path::new(osstr))
+    writer.write(&[0]);
+    let guh = CStr::from_bytes_until_nul(bytes).unwrap();
+    Cow::Borrowed(guh)
 }
 fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
     let mcver = MC_VERSION.get_or_init(|| {
