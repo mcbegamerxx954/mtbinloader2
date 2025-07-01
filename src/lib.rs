@@ -1,13 +1,19 @@
-use std::{ffi::CStr, pin::Pin, sync::OnceLock, fs, io::BufRead};
+use std::{
+    ffi::CStr,
+    fs,
+    pin::Pin,
+    ptr::null_mut,
+    str::SplitWhitespace,
+    sync::{atomic::AtomicPtr, OnceLock},
+};
 mod aasset;
 mod plthook;
 use crate::plthook::replace_plt_functions;
 use bhook::hook_fn;
 use core::mem::transmute;
 use cxx::CxxString;
-use libc::{android_set_abort_message, c_void};
+use libc::c_void;
 use plt_rs::DynamicLibrary;
-use proc_maps::MapRange;
 use tinypatscan::Pattern;
 
 #[cfg(target_arch = "aarch64")]
@@ -16,36 +22,31 @@ const RPMC_PATTERNS: [Pattern<80>; 2] = [
     Pattern::from_str("FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4"),
 ];
 #[cfg(target_arch = "arm")]
-const RPMC_PATTERNS: [Pattern<80>; 1] = [
-    Pattern::from_str(
-        "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
-    ),
-];
+const RPMC_PATTERNS: [Pattern<80>; 1] = [Pattern::from_str(
+    "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
+)];
 #[cfg(target_arch = "x86_64")]
 const RPMC_PATTERNS: [Pattern<80>; 2] = [
     Pattern::from_str("55 41 57 41 56 41 55 41 54 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
     Pattern::from_str("55 41 57 41 56 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
 ];
 
-#[repr(C)]
-pub struct ResourceLocation {
-    _data: [u8; 0],
-    _marker: core::marker::PhantomData<(*mut u8, core::marker::PhantomPinned)>,
-}
+#[repr(transparent)]
+pub struct ResourceLocation(*mut c_void);
+
 impl ResourceLocation {
-    pub fn from_str(str: &CStr) -> *mut ResourceLocation {
+    pub fn from_str(str: &CStr) -> ResourceLocation {
         unsafe { resource_location_init(str.as_ptr(), str.count_bytes()) }
     }
-    pub unsafe fn free(loc: *mut ResourceLocation) {
-        unsafe { resource_location_free(loc) }
+}
+impl Drop for ResourceLocation {
+    fn drop(&mut self) {
+        unsafe { resource_location_free(self.0) }
     }
 }
 extern "C" {
-    fn resource_location_init(
-        strptr: *const libc::c_char,
-        size: libc::size_t,
-    ) -> *mut ResourceLocation;
-    fn resource_location_free(loc: *mut ResourceLocation);
+    fn resource_location_init(strptr: *const libc::c_char, size: libc::size_t) -> ResourceLocation;
+    fn resource_location_free(loc: *mut c_void);
 }
 pub fn setup_logging() {
     android_logger::init_once(
@@ -70,14 +71,13 @@ fn main() {
 struct SimpleMapRange {
     start: usize,
     size: usize,
-    pathname: String,
 }
 
 impl SimpleMapRange {
     fn start(&self) -> usize {
         self.start
     }
-    
+
     fn size(&self) -> usize {
         self.size
     }
@@ -85,40 +85,32 @@ impl SimpleMapRange {
 
 fn find_minecraft_library_manually() -> Result<SimpleMapRange, Box<dyn std::error::Error>> {
     let contents = fs::read_to_string("/proc/self/maps")?;
-    
     for line in contents.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 6 {
+        let Some((addr_start, addr_end)) = parse_range(line.split_whitespace()) else {
             continue;
-        }
-        
-        let perms = parts[1];
-        let pathname = parts[5..].join(" ");
-        
-        if perms.contains('x') && pathname.ends_with("libminecraftpe.so") {
-            let addr_parts: Vec<&str> = parts[0].split('-').collect();
-            if addr_parts.len() != 2 {
-                continue;
-            }
-            
-            let start = usize::from_str_radix(addr_parts[0], 16)?;
-            let end = usize::from_str_radix(addr_parts[1], 16)?;
-            
-            log::info!("Found libminecraftpe.so at: {:x}-{:x}", start, end);
-            
-            return Ok(SimpleMapRange {
-                start,
-                size: end - start,
-                pathname,
-            });
-        }
+        };
+        let start = usize::from_str_radix(addr_start, 16)?;
+        let end = usize::from_str_radix(addr_end, 16)?;
+        log::info!("Found libminecraftpe.so at: {:x}-{:x}", start, end);
+        return Ok(SimpleMapRange {
+            start,
+            size: end - start,
+        });
     }
-    
+
     Err("libminecraftpe.so not found in memory maps".into())
+}
+fn parse_range(mut line: SplitWhitespace) -> Option<(&str, &str)> {
+    let addr_range = line.next()?;
+    let perms = line.next()?;
+    let pathname = line.last()?;
+    if perms.contains('x') && pathname.ends_with("libminecraftpe.so") {
+        return addr_range.split_once('-');
+    }
+    None
 }
 
 fn find_signatures(signatures: &[Pattern<80>], range: SimpleMapRange) -> Option<*const u8> {
@@ -180,30 +172,24 @@ fn find_lib<'a>(target_name: &str) -> Option<plt_rs::LoadedLibrary<'a>> {
         .into_iter()
         .find(|lib| lib.name().contains(target_name))
 }
-#[derive(Debug)]
-pub struct ResourcePackManagerPtr(*mut c_void);
-unsafe impl Send for ResourcePackManagerPtr {}
-unsafe impl Sync for ResourcePackManagerPtr {}
-
-pub static PACKM_PTR: OnceLock<ResourcePackManagerPtr> = OnceLock::new();
-pub static PACK_MANAGER: OnceLock<RpmLoadFn> = OnceLock::new();
+pub static PACKM_OBJ: AtomicPtr<libc::c_void> = AtomicPtr::new(null_mut());
+pub static RPM_LOAD: OnceLock<RpmLoadFn> = OnceLock::new();
 
 hook_fn! {
-fn rpm_ctor(this: *mut libc::c_void,unk1: usize,unk2: usize,needs_init: bool) -> *mut libc::c_void = {
-    log::info!("rpm ctor called");
-    let result = call_original(this, unk1, unk2, needs_init);
-    if crate::PACKM_PTR.get().is_none() {
+    fn rpm_ctor(this: *mut libc::c_void,unk1: usize,unk2: usize,needs_init: bool) -> *mut libc::c_void = {
+        use std::sync::atomic::Ordering;
+        log::info!("rpm ctor called");
+        let result = call_original(this, unk1, unk2, needs_init);
         log::info!("RPM pointer has been obtained");
-        crate::PACKM_PTR.set(crate::ResourcePackManagerPtr(this)).unwrap();
-        crate::PACK_MANAGER.set(crate::get_load(this)).unwrap();
+        crate::PACKM_OBJ.store(this, Ordering::Release);
+        crate::RPM_LOAD.set(crate::get_load(this)).unwrap();
+        self_disable();
+        log::info!("hook exit");
+        result
     }
-    log::info!("hook exit");
-    result
-}
 }
 
-type RpmLoadFn =
-    unsafe extern "C" fn(*mut c_void, *mut ResourceLocation, Pin<&mut CxxString>) -> bool;
+type RpmLoadFn = unsafe extern "C" fn(*mut c_void, ResourceLocation, Pin<&mut CxxString>) -> bool;
 unsafe fn get_load(packm_ptr: *mut c_void) -> RpmLoadFn {
     let vptr = *transmute::<*mut c_void, *mut *mut *const u8>(packm_ptr);
     transmute::<*const u8, RpmLoadFn>(*vptr.offset(2))
