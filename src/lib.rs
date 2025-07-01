@@ -1,9 +1,9 @@
 use std::{
     ffi::CStr,
     fs,
-    io::BufRead,
     pin::Pin,
     ptr::null_mut,
+    str::SplitWhitespace,
     sync::{atomic::AtomicPtr, OnceLock},
 };
 mod aasset;
@@ -12,9 +12,8 @@ use crate::plthook::replace_plt_functions;
 use bhook::hook_fn;
 use core::mem::transmute;
 use cxx::CxxString;
-use libc::{android_set_abort_message, c_void};
+use libc::c_void;
 use plt_rs::DynamicLibrary;
-use proc_maps::MapRange;
 use tinypatscan::Pattern;
 
 #[cfg(target_arch = "aarch64")]
@@ -72,7 +71,6 @@ fn main() {
 struct SimpleMapRange {
     start: usize,
     size: usize,
-    pathname: String,
 }
 
 impl SimpleMapRange {
@@ -87,40 +85,32 @@ impl SimpleMapRange {
 
 fn find_minecraft_library_manually() -> Result<SimpleMapRange, Box<dyn std::error::Error>> {
     let contents = fs::read_to_string("/proc/self/maps")?;
-
     for line in contents.lines() {
         if line.trim().is_empty() {
             continue;
         }
-
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 6 {
+        let Some((addr_start, addr_end)) = parse_range(line.split_whitespace()) else {
             continue;
-        }
-
-        let perms = parts[1];
-        let pathname = parts[5..].join(" ");
-
-        if perms.contains('x') && pathname.ends_with("libminecraftpe.so") {
-            let addr_parts: Vec<&str> = parts[0].split('-').collect();
-            if addr_parts.len() != 2 {
-                continue;
-            }
-
-            let start = usize::from_str_radix(addr_parts[0], 16)?;
-            let end = usize::from_str_radix(addr_parts[1], 16)?;
-
-            log::info!("Found libminecraftpe.so at: {:x}-{:x}", start, end);
-
-            return Ok(SimpleMapRange {
-                start,
-                size: end - start,
-                pathname,
-            });
-        }
+        };
+        let start = usize::from_str_radix(addr_start, 16)?;
+        let end = usize::from_str_radix(addr_end, 16)?;
+        log::info!("Found libminecraftpe.so at: {:x}-{:x}", start, end);
+        return Ok(SimpleMapRange {
+            start,
+            size: end - start,
+        });
     }
 
     Err("libminecraftpe.so not found in memory maps".into())
+}
+fn parse_range(mut line: SplitWhitespace) -> Option<(&str, &str)> {
+    let addr_range = line.next()?;
+    let perms = line.next()?;
+    let pathname = line.last()?;
+    if perms.contains('x') && pathname.ends_with("libminecraftpe.so") {
+        return addr_range.split_once('-');
+    }
+    None
 }
 
 fn find_signatures(signatures: &[Pattern<80>], range: SimpleMapRange) -> Option<*const u8> {
