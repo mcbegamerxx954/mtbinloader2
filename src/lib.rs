@@ -18,12 +18,12 @@ use tinypatscan::Pattern;
 
 #[cfg(target_arch = "aarch64")]
 const RPMC_PATTERNS: [Pattern<80>; 2] = [
-    Pattern::from_str("FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"),
+    Pattern::from_str("FF C3 02 D1 FD 7B 06 A9 FD 83 01 91 F9 3B 00 F9 F8 5F 08 A9 F6 57 09 A9 F4 4F 0A A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"),
     Pattern::from_str("FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4"),
 ];
 #[cfg(target_arch = "arm")]
 const RPMC_PATTERNS: [Pattern<80>; 1] = [Pattern::from_str(
-    "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
+    "F0 B5 03 AF 2D E9 00 ?? ?? B0 ?? 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
 )];
 #[cfg(target_arch = "x86_64")]
 const RPMC_PATTERNS: [Pattern<80>; 2] = [
