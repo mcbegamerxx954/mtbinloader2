@@ -1,6 +1,8 @@
 use crate::ResourceLocation;
 use libc::{off64_t, off_t};
-use materialbin::{CompiledMaterialDefinition, MinecraftVersion};
+use materialbin::{
+    bgfx_shader::BgfxShader, pass::ShaderStage, CompiledMaterialDefinition, MinecraftVersion,
+};
 use ndk::asset::Asset;
 use ndk_sys::{AAsset, AAssetManager};
 use once_cell::sync::Lazy;
@@ -43,7 +45,7 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
         log::error!("Something is wrong with AssetManager, mc detection failed: {e}");
         return None;
     };
-    for version in materialbin::ALL_VERSIONS {
+    for version in materialbin::ALL_VERSIONS.into_iter().rev() {
         if buf
             .pread_with::<CompiledMaterialDefinition>(0, version)
             .is_ok()
@@ -163,9 +165,9 @@ fn opt_path_join<'a>(bytes: &'a mut [u8; 128], paths: &[&Path]) -> Cow<'a, CStr>
     let mut writer = bytes.as_mut_slice();
     for path in paths {
         let osstr = path.as_os_str().as_bytes();
-        writer.write(osstr);
+        writer.write(osstr).unwrap();
     }
-    writer.write(&[0]);
+    writer.write(&[0]).unwrap();
     let guh = CStr::from_bytes_until_nul(bytes).unwrap();
     Cow::Borrowed(guh)
 }
@@ -184,7 +186,7 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
     // just ignore if no mc version was found
     let mcver = (*mcver)?;
     for version in materialbin::ALL_VERSIONS {
-        let material: CompiledMaterialDefinition = match data.pread_with(0, version) {
+        let mut material: CompiledMaterialDefinition = match data.pread_with(0, version) {
             Ok(data) => data,
             Err(e) => {
                 log::trace!("[version] Parsing failed: {e}");
@@ -195,6 +197,9 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         if version == mcver {
             return None;
         }
+        if mcver == MinecraftVersion::V1_21_110 && material.name == "RenderChunk" {
+            handle_lightmaps(&mut material);
+        }
         let mut output = Vec::with_capacity(data.len());
         if let Err(e) = material.write(&mut output, mcver) {
             log::trace!("[version] Write error: {e}");
@@ -204,6 +209,36 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
     }
 
     None
+}
+fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
+    for (_, pass) in &mut materialbin.passes {
+        for variants in &mut pass.variants {
+            for (stage, code) in &mut variants.shader_codes {
+                if stage.stage == ShaderStage::Vertex {
+                    let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
+                    replace_old_lightmap(&mut bgfx.code);
+                    code.bgfx_shader_data.clear();
+                    bgfx.write(&mut code.bgfx_shader_data).unwrap();
+                }
+            }
+        }
+    }
+}
+fn replace_old_lightmap(codebuf: &mut Vec<u8>) {
+    let pattern = b"v_lightmapUV = a_texcoord1;";
+    let replace_with = b"
+v_lightmapUV = vec2(
+    clamp(float(uint(floor(a_texcoord1.x * 255.0)) & 15u) * 0.0625, 0.0, 1.0),
+    clamp(float((uint(floor(a_texcoord1.x * 255.0)) & 240u) >> 4) * 0.0625, 0.0, 1.0)
+);";
+    let sus = match memchr::memmem::find(codebuf, pattern) {
+        Some(yay) => yay,
+        None => {
+            println!("oops");
+            return;
+        }
+    };
+    codebuf.splice(sus..sus + pattern.len(), *replace_with);
 }
 pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_int) -> off64_t {
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
