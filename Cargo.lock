@@ -274,7 +274,6 @@ dependencies = [
 [[package]]
 name = "materialbin"
 version = "0.1.1"
-source = "git+https://github.com/mcbegamerxx954/materialbin#9665abb2a808fa8c280ed214dbe0d02d82fcb8a4"
 dependencies = [
  "byteorder",
  "indexmap",
@@ -300,6 +299,7 @@ dependencies = [
  "libc",
  "log",
  "materialbin",
+ "memchr",
  "ndk",
  "ndk-sys",
  "once_cell",

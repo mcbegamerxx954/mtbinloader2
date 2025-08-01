@@ -17,14 +17,24 @@ use plt_rs::DynamicLibrary;
 use tinypatscan::Pattern;
 
 #[cfg(target_arch = "aarch64")]
-const RPMC_PATTERNS: [Pattern<80>; 2] = [
+const RPMC_PATTERNS: [Pattern<80>; 3] = [
+    // V1.21.100
+    Pattern::from_str("FF C3 02 D1 FD 7B 06 A9 FD 83 01 91 F9 3B 00 F9 F8 5F 08 A9 F6 57 09 A9 F4 4F 0A A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"),
+    // older than V1.21.100
     Pattern::from_str("FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"),
     Pattern::from_str("FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4"),
 ];
 #[cfg(target_arch = "arm")]
-const RPMC_PATTERNS: [Pattern<80>; 1] = [Pattern::from_str(
-    "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
-)];
+const RPMC_PATTERNS: [Pattern<80>; 2] = [
+    Pattern::from_str(
+        // V1.21.100
+        "F0 B5 03 AF 2D E9 00 ?? ?? B0 ?? 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69 ",
+    ),
+    Pattern::from_str(
+        // Older than V1.21.100
+        "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
+    ),
+];
 #[cfg(target_arch = "x86_64")]
 const RPMC_PATTERNS: [Pattern<80>; 2] = [
     Pattern::from_str("55 41 57 41 56 41 55 41 54 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
