@@ -197,7 +197,7 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         if version == mcver {
             return None;
         }
-        if mcver == MinecraftVersion::V1_21_110 && material.name == "RenderChunk" {
+        if material.name == "RenderChunk" {
             handle_lightmaps(&mut material);
         }
         let mut output = Vec::with_capacity(data.len());

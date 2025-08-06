@@ -28,7 +28,7 @@ const RPMC_PATTERNS: [Pattern<80>; 3] = [
 const RPMC_PATTERNS: [Pattern<80>; 2] = [
     Pattern::from_str(
         // V1.21.100
-        "F0 B5 03 AF 2D E9 00 ?? ?? B0 ?? 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69 ",
+        "F0 B5 03 AF 2D E9 00 ?? ?? B0 ?? 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
     ),
     Pattern::from_str(
         // Older than V1.21.100
