@@ -1,7 +1,7 @@
 use crate::ResourceLocation;
 use libc::{off64_t, off_t};
 use materialbin::{
-    bgfx_shader::BgfxShader, pass::ShaderStage, CompiledMaterialDefinition, MinecraftVersion,
+    CompiledMaterialDefinition, MinecraftVersion, bgfx_shader::BgfxShader, pass::ShaderStage
 };
 use ndk::asset::Asset;
 use ndk_sys::{AAsset, AAssetManager};
@@ -195,9 +195,12 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         };
         // Prevent some work
         if version == mcver {
-            return None;
+            // return None;
         }
-        if material.name == "RenderChunk" {
+        if !(version == MinecraftVersion::V1_21_110) && (
+            material.name == "RenderChunk" || 
+            material.name == "RenderChunkPrepass"
+        ) {
             handle_lightmaps(&mut material);
         }
         let mut output = Vec::with_capacity(data.len());
@@ -225,12 +228,16 @@ fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
     }
 }
 fn replace_old_lightmap(codebuf: &mut Vec<u8>) {
-    let pattern = b"v_lightmapUV = a_texcoord1;";
+//     let pattern = b"v_lightmapUV = a_texcoord1;";
+//     let replace_with = b"
+// v_lightmapUV = vec2(
+//     clamp(float(uint(floor(a_texcoord1.x * 255.0)) & 15u) * 0.0625, 0.0, 1.0),
+//     clamp(float((uint(floor(a_texcoord1.x * 255.0)) & 240u) >> 4) * 0.0625, 0.0, 1.0)
+// );";
+    let pattern = b"void main";
     let replace_with = b"
-v_lightmapUV = vec2(
-    clamp(float(uint(floor(a_texcoord1.x * 255.0)) & 15u) * 0.0625, 0.0, 1.0),
-    clamp(float((uint(floor(a_texcoord1.x * 255.0)) & 240u) >> 4) * 0.0625, 0.0, 1.0)
-);";
+#define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
+void main";
     let sus = match memchr::memmem::find(codebuf, pattern) {
         Some(yay) => yay,
         None => {
@@ -240,6 +247,7 @@ v_lightmapUV = vec2(
     };
     codebuf.splice(sus..sus + pattern.len(), *replace_with);
 }
+
 pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_int) -> off64_t {
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
