@@ -15,24 +15,22 @@ use std::{
     io::{self, Cursor, Read, Seek, Write},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, Mutex, OnceLock},
+    sync::{atomic::AtomicBool, atomic::Ordering, Mutex, OnceLock},
 };
 
 // This makes me feel wrong... but all we will do is compare the pointer
-// and the struct will be used in a mutex so i guess this is safe??
+// and the struct will be used in a mutex so this is safe??
 #[derive(PartialEq, Eq, Hash)]
 struct AAssetPtr(*const ndk_sys::AAsset);
 unsafe impl Send for AAssetPtr {}
 
-// The minecraft version we will use to port shaders to
+// The Minecraft version we will use to port shaders to
 static MC_VERSION: OnceLock<Option<MinecraftVersion>> = OnceLock::new();
 static IS_1_21_100: AtomicBool = AtomicBool::new(false);
-// The assets we have registrered to remplace data about
+// The assets we have registered to replace data about
 static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-// Im very sorry but its just that AssetManager is so shitty to work with
-// i cant handle how randomly it breaks
 fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
     let mut file = match get_uitext(man) {
         Some(asset) => asset,
@@ -51,7 +49,7 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
         if let Ok(_shader) = buf.pread_with::<CompiledMaterialDefinition>(0, version) {
             log::info!("Mc version is {version}");
             if memchr::memmem::find(&buf, b"v_dithering").is_some() {
-                IS_1_21_100.store(true, std::sync::atomic::Ordering::Release);
+                IS_1_21_100.store(true, Ordering::Release);
             }
             return Some(version);
         };
@@ -59,10 +57,10 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
     None
 }
 
-// Try to open UIText.material.bin to guess mc shader version
+// Try to open UIText.material.bin to guess Minecraft shader version
 fn get_uitext(man: ndk::asset::AssetManager) -> Option<Asset> {
-    const NEW: &CStr = c"assets/renderer/materials/UIText.material.bin";
-    const OLD: &CStr = c"renderer/materials/UIText.material.bin";
+    const NEW: &CStr = c"assets/renderer/materials/RenderChunk.material.bin";
+    const OLD: &CStr = c"renderer/materials/RenderChunk.material.bin";
     for path in [NEW, OLD] {
         if let Some(asset) = man.open(path) {
             return Some(asset);
@@ -84,7 +82,7 @@ pub(crate) unsafe fn open(
     fname: *const libc::c_char,
     mode: libc::c_int,
 ) -> *mut ndk_sys::AAsset {
-    // This is where ub can happen, but we are merely a hook.
+    // This is where UB can happen, but we are merely a hook.
     let aasset = unsafe { ndk_sys::AAssetManager_open(man, fname, mode) };
     let c_str = unsafe { CStr::from_ptr(fname) };
     let raw_cstr = c_str.to_bytes();
@@ -120,7 +118,7 @@ pub(crate) unsafe fn open(
             };
             let mut arraybuf = [0; 128];
             let file_path = opt_path_join(&mut arraybuf, &[Path::new(replacement.1), file]);
-            let packm_ptr = crate::PACKM_OBJ.load(std::sync::atomic::Ordering::Acquire);
+            let packm_ptr = crate::PACKM_OBJ.load(Ordering::Acquire);
             let resource_loc = ResourceLocation::from_str(file_path.as_ref());
             log::info!("loading rpck file: {:#?}", &file_path);
             if packm_ptr.is_null() {
@@ -143,11 +141,22 @@ pub(crate) unsafe fn open(
             };
             let mut wanted_lock = WANTED_ASSETS.lock().unwrap();
             wanted_lock.insert(AAssetPtr(aasset), Cursor::new(buffer));
-            // we do not clean cxx string because cxx crate does that for us
+            // We do not clean cxx string because cxx crate does that for us
             return aasset;
         }
     }
     return aasset;
+}
+macro_rules! handle_result {
+    ($expr:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(e) => {
+                log::error!("{e}");
+                -1
+            }
+        }
+    };
 }
 /// Join paths without allocating if possible, or
 /// if the joined path does not fit the buffer then just
@@ -185,7 +194,7 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
         get_current_mcver(manager)
     });
-    // just ignore if no mc version was found
+    // Just ignore if no Minecraft version was found
     let mcver = (*mcver)?;
     for version in materialbin::ALL_VERSIONS {
         let mut material: CompiledMaterialDefinition = match data.pread_with(0, version) {
@@ -201,6 +210,7 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         }
         if version != MinecraftVersion::V1_21_110
             && (material.name == "RenderChunk" || material.name == "RenderChunkPrepass")
+            && IS_1_21_100.load(Ordering::Acquire)
         {
             handle_lightmaps(&mut material);
         }
@@ -256,7 +266,7 @@ pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_i
         Some(file) => file,
         None => return ndk_sys::AAsset_seek64(aasset, off, whence),
     };
-    seek_facade(off, whence, file) as off64_t
+    seek_facade(off, whence, file).into()
 }
 
 pub(crate) unsafe fn seek(aasset: *mut AAsset, off: off_t, whence: libc::c_int) -> off_t {
@@ -265,10 +275,7 @@ pub(crate) unsafe fn seek(aasset: *mut AAsset, off: off_t, whence: libc::c_int) 
         Some(file) => file,
         None => return ndk_sys::AAsset_seek(aasset, off, whence),
     };
-    // This code can be very deadly on large files,
-    // but since NO replacement should surpass u32 max we should be fine...
-    // i dont even think a mcpack can exceed that
-    seek_facade(off.into(), whence, file) as off_t
+    handle_result!(seek_facade(off.into(), whence, file).try_into())
 }
 
 pub(crate) unsafe fn read(
@@ -290,7 +297,7 @@ pub(crate) unsafe fn read(
             return -1 as libc::c_int;
         }
     };
-    read_total as libc::c_int
+    handle_result!(read_total.try_into())
 }
 
 pub(crate) unsafe fn len(aasset: *mut AAsset) -> off_t {
@@ -299,7 +306,7 @@ pub(crate) unsafe fn len(aasset: *mut AAsset) -> off_t {
         Some(file) => file,
         None => return ndk_sys::AAsset_getLength(aasset),
     };
-    file.get_ref().len() as off_t
+    handle_result!(file.get_ref().len().try_into())
 }
 
 pub(crate) unsafe fn len64(aasset: *mut AAsset) -> off64_t {
@@ -308,7 +315,7 @@ pub(crate) unsafe fn len64(aasset: *mut AAsset) -> off64_t {
         Some(file) => file,
         None => return ndk_sys::AAsset_getLength64(aasset),
     };
-    file.get_ref().len() as off64_t
+    handle_result!(file.get_ref().len().try_into())
 }
 
 pub(crate) unsafe fn rem(aasset: *mut AAsset) -> off_t {
@@ -317,7 +324,7 @@ pub(crate) unsafe fn rem(aasset: *mut AAsset) -> off_t {
         Some(file) => file,
         None => return ndk_sys::AAsset_getRemainingLength(aasset),
     };
-    (file.get_ref().len() - file.position() as usize) as off_t
+    handle_result!((file.get_ref().len() - file.position() as usize).try_into())
 }
 
 pub(crate) unsafe fn rem64(aasset: *mut AAsset) -> off64_t {
@@ -326,7 +333,7 @@ pub(crate) unsafe fn rem64(aasset: *mut AAsset) -> off64_t {
         Some(file) => file,
         None => return ndk_sys::AAsset_getRemainingLength64(aasset),
     };
-    (file.get_ref().len() - file.position() as usize) as off64_t
+    handle_result!((file.get_ref().len() - file.position() as usize).try_into())
 }
 
 pub(crate) unsafe fn close(aasset: *mut AAsset) {
