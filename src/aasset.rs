@@ -3,6 +3,7 @@ use libc::{off64_t, off_t};
 use materialbin::{
     bgfx_shader::BgfxShader, pass::ShaderStage, CompiledMaterialDefinition, MinecraftVersion,
 };
+use memchr::memmem::Finder;
 use ndk::asset::Asset;
 use ndk_sys::{AAsset, AAssetManager};
 use once_cell::sync::Lazy;
@@ -14,7 +15,7 @@ use std::{
     io::{self, Cursor, Read, Seek, Write},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{atomic::AtomicBool, Mutex, OnceLock},
 };
 
 // This makes me feel wrong... but all we will do is compare the pointer
@@ -25,7 +26,7 @@ unsafe impl Send for AAssetPtr {}
 
 // The minecraft version we will use to port shaders to
 static MC_VERSION: OnceLock<Option<MinecraftVersion>> = OnceLock::new();
-
+static IS_1_21_100: AtomicBool = AtomicBool::new(false);
 // The assets we have registrered to remplace data about
 static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -45,12 +46,13 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
         log::error!("Something is wrong with AssetManager, mc detection failed: {e}");
         return None;
     };
+
     for version in materialbin::ALL_VERSIONS.into_iter().rev() {
-        if buf
-            .pread_with::<CompiledMaterialDefinition>(0, version)
-            .is_ok()
-        {
+        if let Ok(_shader) = buf.pread_with::<CompiledMaterialDefinition>(0, version) {
             log::info!("Mc version is {version}");
+            if memchr::memmem::find(&buf, b"v_dithering").is_some() {
+                IS_1_21_100.store(true, std::sync::atomic::Ordering::Release);
+            }
             return Some(version);
         };
     }
@@ -195,9 +197,11 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         };
         // Prevent some work
         if version == mcver {
-            return None;
+            // return None;
         }
-        if material.name == "RenderChunk" {
+        if version != MinecraftVersion::V1_21_110
+            && (material.name == "RenderChunk" || material.name == "RenderChunkPrepass")
+        {
             handle_lightmaps(&mut material);
         }
         let mut output = Vec::with_capacity(data.len());
@@ -211,12 +215,13 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
     None
 }
 fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
+    let finder = Finder::new(b"void main");
     for (_, pass) in &mut materialbin.passes {
         for variants in &mut pass.variants {
             for (stage, code) in &mut variants.shader_codes {
                 if stage.stage == ShaderStage::Vertex {
                     let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
-                    replace_old_lightmap(&mut bgfx.code);
+                    replace_old_lightmap(&mut bgfx.code, &finder);
                     code.bgfx_shader_data.clear();
                     bgfx.write(&mut code.bgfx_shader_data).unwrap();
                 }
@@ -224,14 +229,18 @@ fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
         }
     }
 }
-fn replace_old_lightmap(codebuf: &mut Vec<u8>) {
-    let pattern = b"v_lightmapUV = a_texcoord1;";
+fn replace_old_lightmap(codebuf: &mut Vec<u8>, finder: &Finder) {
+    //     let pattern = b"v_lightmapUV = a_texcoord1;";
+    //     let replace_with = b"
+    // v_lightmapUV = vec2(
+    //     clamp(float(uint(floor(a_texcoord1.x * 255.0)) & 15u) * 0.0625, 0.0, 1.0),
+    //     clamp(float((uint(floor(a_texcoord1.x * 255.0)) & 240u) >> 4) * 0.0625, 0.0, 1.0)
+    // );";
+    let pattern = b"void main";
     let replace_with = b"
-v_lightmapUV = vec2(
-    clamp(float(uint(floor(a_texcoord1.x * 255.0)) & 15u) * 0.0625, 0.0, 1.0),
-    clamp(float((uint(floor(a_texcoord1.x * 255.0)) & 240u) >> 4) * 0.0625, 0.0, 1.0)
-);";
-    let sus = match memchr::memmem::find(codebuf, pattern) {
+#define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
+void main";
+    let sus = match finder.find(codebuf) {
         Some(yay) => yay,
         None => {
             println!("oops");
@@ -240,6 +249,7 @@ v_lightmapUV = vec2(
     };
     codebuf.splice(sus..sus + pattern.len(), *replace_with);
 }
+
 pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_int) -> off64_t {
     let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
