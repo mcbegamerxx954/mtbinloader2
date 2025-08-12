@@ -25,39 +25,37 @@ const RPMC_PATTERNS: [Pattern<80>; 3] = [
     Pattern::from_str("FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4"),
 ];
 #[cfg(target_arch = "arm")]
-const RPMC_PATTERNS: [Pattern<80>; 2] = [
-    Pattern::from_str(
-        // V1.21.100
-        "F0 B5 03 AF 2D E9 00 ?? ?? B0 ?? 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
-    ),
-    Pattern::from_str(
-        // Older than V1.21.100
-        "F0 B5 03 AF 2D E9 00 ?? ?? B0 05 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
-    ),
-];
+const RPMC_PATTERNS: [Pattern<80>; 1] = [Pattern::from_str(
+    // V1.21.100
+    "F0 B5 03 AF 2D E9 00 ?? ?? B0 ?? 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
+)];
 #[cfg(target_arch = "x86_64")]
 const RPMC_PATTERNS: [Pattern<80>; 2] = [
     Pattern::from_str("55 41 57 41 56 41 55 41 54 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
     Pattern::from_str("55 41 57 41 56 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
 ];
 
+// Smart pointer for ResourceLocation
 #[repr(transparent)]
 pub struct ResourceLocation(*mut c_void);
-
 impl ResourceLocation {
     pub fn from_str(str: &CStr) -> ResourceLocation {
+        // SAFETY: C++ will copy this string so its alright
         unsafe { resource_location_init(str.as_ptr(), str.count_bytes()) }
     }
 }
 impl Drop for ResourceLocation {
     fn drop(&mut self) {
+        // SAFETY: We handle the scope so its good
         unsafe { resource_location_free(self.0) }
     }
 }
+// Linking against string.cpp
 extern "C" {
     fn resource_location_init(strptr: *const libc::c_char, size: libc::size_t) -> ResourceLocation;
     fn resource_location_free(loc: *mut c_void);
 }
+// Just setup the logger so we see those logcats
 pub fn setup_logging() {
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Trace),
@@ -77,6 +75,7 @@ fn main() {
     log::info!("Hooking AssetManager functions");
     hook_aaset();
 }
+// A very minimal map range
 #[derive(Debug)]
 struct SimpleMapRange {
     start: usize,
@@ -84,10 +83,12 @@ struct SimpleMapRange {
 }
 
 impl SimpleMapRange {
+    /// Get the address where this range starts
     fn start(&self) -> usize {
         self.start
     }
 
+    /// Get the address where this range ends
     fn size(&self) -> usize {
         self.size
     }
@@ -99,6 +100,7 @@ fn find_minecraft_library_manually() -> Result<SimpleMapRange, Box<dyn std::erro
         if line.trim().is_empty() {
             continue;
         }
+        // Not too pretty but this method prevents crashes
         let Some((addr_start, addr_end)) = parse_range(line.split_whitespace()) else {
             continue;
         };
@@ -113,6 +115,7 @@ fn find_minecraft_library_manually() -> Result<SimpleMapRange, Box<dyn std::erro
 
     Err("libminecraftpe.so not found in memory maps".into())
 }
+/// Separated into function due to option spam
 fn parse_range(mut line: SplitWhitespace) -> Option<(&str, &str)> {
     let addr_range = line.next()?;
     let perms = line.next()?;
@@ -156,9 +159,11 @@ macro_rules! cast_array {
         ]
     }
 }
+/// Set up the asset manager hooks so we control apk file access
 pub fn hook_aaset() {
     let lib_entry = find_lib("libminecraftpe").expect("Cannot find minecraftpe");
     let dyn_lib = DynamicLibrary::initialize(lib_entry).expect("Failed to find mc info");
+    // Functions of aasset
     let asset_fn_list = cast_array! {
         "AAssetManager_open" -> aasset::open,
         "AAsset_read" -> aasset::read,
@@ -174,8 +179,10 @@ pub fn hook_aaset() {
         "AAsset_getBuffer" -> aasset::get_buffer,
         "AAsset_isAllocated" -> aasset::is_alloc,
     };
+    //The actual work
     replace_plt_functions(&dyn_lib, asset_fn_list);
 }
+/// Find some library's plt
 fn find_lib<'a>(target_name: &str) -> Option<plt_rs::LoadedLibrary<'a>> {
     let loaded_modules = plt_rs::collect_modules();
     loaded_modules
@@ -193,6 +200,7 @@ hook_fn! {
         log::info!("RPM pointer has been obtained");
         crate::PACKM_OBJ.store(this, Ordering::Release);
         crate::RPM_LOAD.set(crate::get_load(this)).unwrap();
+        // Not doing this just adds overhead
         self_disable();
         log::info!("hook exit");
         result
@@ -200,6 +208,7 @@ hook_fn! {
 }
 
 type RpmLoadFn = unsafe extern "C" fn(*mut c_void, ResourceLocation, Pin<&mut CxxString>) -> bool;
+/// Ahh c++, truly the language of all time
 unsafe fn get_load(packm_ptr: *mut c_void) -> RpmLoadFn {
     let vptr = *transmute::<*mut c_void, *mut *mut *const u8>(packm_ptr);
     transmute::<*const u8, RpmLoadFn>(*vptr.offset(2))

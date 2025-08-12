@@ -159,12 +159,11 @@ macro_rules! handle_result {
     };
 }
 /// Join paths without allocating if possible, or
-/// if the joined path does not fit the buffer then just
+/// if the joined path does not fit the buffer, then just
 /// allocate instead
 fn opt_path_join<'a>(bytes: &'a mut [u8; 128], paths: &[&Path]) -> Cow<'a, CStr> {
     let total_len: usize = paths.iter().map(|p| p.as_os_str().len()).sum();
     if total_len + 1 > 128 {
-        // panic!("fuck");
         let mut pathbuf = PathBuf::new();
         for path in paths {
             pathbuf.push(path);
@@ -266,7 +265,7 @@ pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_i
         Some(file) => file,
         None => return ndk_sys::AAsset_seek64(aasset, off, whence),
     };
-    seek_facade(off, whence, file).into()
+    handle_result!(seek_facade(off, whence, file).try_into())
 }
 
 pub(crate) unsafe fn seek(aasset: *mut AAsset, off: off_t, whence: libc::c_int) -> off_t {
@@ -394,7 +393,7 @@ pub(crate) unsafe fn is_alloc(aasset: *mut AAsset) -> libc::c_int {
 fn seek_facade(offset: i64, whence: libc::c_int, file: &mut Cursor<Vec<u8>>) -> i64 {
     let offset = match whence {
         libc::SEEK_SET => {
-            //Lets check this so we dont mess up
+            //Let's check this so we don't mess up
             let u64_off = match u64::try_from(offset) {
                 Ok(uoff) => uoff,
                 Err(e) => {
