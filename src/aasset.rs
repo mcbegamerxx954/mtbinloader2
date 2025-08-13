@@ -203,14 +203,14 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
                 continue;
             }
         };
+        let needs_lightmap_fix = IS_1_21_100.load(Ordering::Acquire)
+            && version != MinecraftVersion::V1_21_110
+            && (material.name == "RenderChunk" || material.name == "RenderChunkPrepass");
         // Prevent some work
-        if version == mcver {
-            // return None;
+        if version == mcver && !needs_lightmap_fix {
+            return None;
         }
-        if version != MinecraftVersion::V1_21_110
-            && (material.name == "RenderChunk" || material.name == "RenderChunkPrepass")
-            && IS_1_21_100.load(Ordering::Acquire)
-        {
+        if needs_lightmap_fix {
             handle_lightmaps(&mut material);
         }
         let mut output = Vec::with_capacity(data.len());
