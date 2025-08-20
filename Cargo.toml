@@ -5,7 +5,9 @@ edition = "2021"
 
 [dependencies]
 android_logger = { version = "0.15.0", default-features = false }
+atoi = "2.0.0"
 bhook = { version = "0.1.0", git = "https://github.com/mcbegamerxx954/bhook" }
+bstr = "1.12.0"
 ctor = "0.4.1"
 cxx = "1.0.128"
 libc = "0.2.159"
