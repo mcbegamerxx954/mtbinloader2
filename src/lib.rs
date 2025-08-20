@@ -1,8 +1,9 @@
 use std::{
     ffi::CStr,
-    fs,
+    fs::{self, File},
     pin::Pin,
     ptr::null_mut,
+    slice::Split,
     str::SplitWhitespace,
     sync::{atomic::AtomicPtr, OnceLock},
 };
@@ -10,12 +11,14 @@ mod aasset;
 mod plthook;
 use crate::plthook::replace_plt_functions;
 use bhook::hook_fn;
+use bstr::ByteSlice;
+//use bstr::ByteSlice;
+use atoi::FromRadix16;
 use core::mem::transmute;
 use cxx::CxxString;
 use libc::c_void;
 use plt_rs::DynamicLibrary;
 use tinypatscan::Pattern;
-
 #[cfg(target_arch = "aarch64")]
 const RPMC_PATTERNS: [Pattern<80>; 3] = [
     // V1.21.100
@@ -95,17 +98,17 @@ impl SimpleMapRange {
 }
 
 fn find_minecraft_library_manually() -> Result<SimpleMapRange, Box<dyn std::error::Error>> {
-    let contents = fs::read_to_string("/proc/self/maps")?;
+    let contents = fs::read("/proc/self/maps")?;
     for line in contents.lines() {
-        if line.trim().is_empty() {
+        if line.trim_ascii().is_empty() {
             continue;
         }
         // Not too pretty but this method prevents crashes
-        let Some((addr_start, addr_end)) = parse_range(line.split_whitespace()) else {
+        let Some((addr_start, addr_end)) = parse_range(line) else {
             continue;
         };
-        let start = usize::from_str_radix(addr_start, 16)?;
-        let end = usize::from_str_radix(addr_end, 16)?;
+        let start = usize::from_radix_16(addr_start).0;
+        let end = usize::from_radix_16(addr_end).0;
         log::info!("Found libminecraftpe.so at: {:x}-{:x}", start, end);
         return Ok(SimpleMapRange {
             start,
@@ -116,12 +119,13 @@ fn find_minecraft_library_manually() -> Result<SimpleMapRange, Box<dyn std::erro
     Err("libminecraftpe.so not found in memory maps".into())
 }
 /// Separated into function due to option spam
-fn parse_range(mut line: SplitWhitespace) -> Option<(&str, &str)> {
+fn parse_range(buf: &[u8]) -> Option<(&[u8], &[u8])> {
+    let mut line = buf.split(|v| v.is_ascii_whitespace());
     let addr_range = line.next()?;
     let perms = line.next()?;
     let pathname = line.last()?;
-    if perms.contains('x') && pathname.ends_with("libminecraftpe.so") {
-        return addr_range.split_once('-');
+    if perms.contains(&b'x') && pathname.ends_with(b"libminecraftpe.so") {
+        return addr_range.split_once_str(b"-");
     }
     None
 }
