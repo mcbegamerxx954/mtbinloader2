@@ -11,6 +11,7 @@ mod plthook;
 use crate::plthook::replace_plt_functions;
 use bhook::hook_fn;
 use bstr::ByteSlice;
+use cpp_string::ResourceLocation;
 //use bstr::ByteSlice;
 use atoi::FromRadix16;
 use core::mem::transmute;
@@ -37,39 +38,6 @@ const RPMC_PATTERNS: [Pattern<80>; 2] = [
     Pattern::from_str("55 41 57 41 56 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
 ];
 
-// Smart pointer for ResourceLocation
-#[repr(transparent)]
-pub struct ResourceLocation(*mut c_void);
-impl Default for ResourceLocation {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ResourceLocation {
-    pub fn new() -> Self {
-        unsafe { resource_location_init() }
-    }
-    pub fn get_path<'a>(&mut self) -> Pin<&'a mut CxxString> {
-        // SAFETY: We just did not force it to be pin since then borrow checker gets angry
-        unsafe {
-            let ptr = resource_location_path(self.0);
-            transmute(ptr)
-        }
-    }
-}
-impl Drop for ResourceLocation {
-    fn drop(&mut self) {
-        // SAFETY: We handle the scope so its good
-        unsafe { resource_location_free(self.0) }
-    }
-}
-// Linking against string.cpp
-extern "C" {
-    fn resource_location_init() -> ResourceLocation;
-    fn resource_location_path(loc: *mut c_void) -> *mut CxxString;
-    fn resource_location_free(loc: *mut c_void);
-}
 // Just setup the logger so we see those logcats
 pub fn setup_logging() {
     android_logger::init_once(

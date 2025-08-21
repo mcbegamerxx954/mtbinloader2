@@ -1,7 +1,7 @@
 //Explanation: Aasset is NOT thread-safe anyways so we will not try adding thread safety either
 #![allow(static_mut_refs)]
 
-use crate::{cpp_string::StackString, ResourceLocation};
+use crate::{cpp_string::ResourceLocation, cpp_string::StackString};
 use cxx::CxxString;
 use libc::{c_char, c_int, c_void, off64_t, off_t, size_t};
 use materialbin::{
