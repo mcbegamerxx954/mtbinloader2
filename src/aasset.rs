@@ -1,7 +1,8 @@
 //Explanation: Aasset is NOT thread-safe anyways so we will not try adding thread safety either
 #![allow(static_mut_refs)]
 
-use crate::ResourceLocation;
+use crate::{cpp_string::StackString, ResourceLocation};
+use cxx::CxxString;
 use libc::{off64_t, off_t};
 use materialbin::{
     bgfx_shader::BgfxShader, pass::ShaderStage, CompiledMaterialDefinition, MinecraftVersion,
@@ -19,6 +20,7 @@ use std::{
     io::{self, Cursor, Read, Seek, Write},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         OnceLock,
@@ -35,7 +37,7 @@ unsafe impl Send for AAssetPtr {}
 static MC_VERSION: OnceLock<Option<MinecraftVersion>> = OnceLock::new();
 static IS_1_21_100: AtomicBool = AtomicBool::new(false);
 // The assets we have registered to replace data about
-static mut WANTED_ASSETS: Lazy<UnsafeCell<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
+static mut WANTED_ASSETS: Lazy<UnsafeCell<HashMap<AAssetPtr, BufferCursor>>> =
     Lazy::new(|| UnsafeCell::new(HashMap::new()));
 
 fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
@@ -115,7 +117,8 @@ pub(crate) unsafe fn open(
     for replacement in replacement_list {
         // Remove the prefix we want to change
         if let Ok(file) = stripped.strip_prefix(replacement.0) {
-            cxx::let_cxx_string!(cxx_out = "");
+            let mut cxx_storage = StackString::new();
+            let mut cxx_ptr = cxx_storage.init("");
             let loadfn = match crate::RPM_LOAD.get() {
                 Some(ptr) => ptr,
                 None => {
@@ -123,32 +126,34 @@ pub(crate) unsafe fn open(
                     return aasset;
                 }
             };
-            let mut arraybuf = [0; 128];
-            let file_path = opt_path_join(&mut arraybuf, &[Path::new(replacement.1), file]);
+            //            let mut arraybuf = [0; 158];
+            //
+
+            let mut resource_loc = ResourceLocation::new();
+            let mut path = ResourceLocation::get_path(&mut resource_loc);
+            opt_path_join(path.as_mut(), &[Path::new(replacement.1), file]);
             let packm_ptr = crate::PACKM_OBJ.load(Ordering::Acquire);
-            let resource_loc = ResourceLocation::from_str(file_path.as_ref());
-            log::info!("loading rpck file: {:#?}", &file_path);
+
+            log::info!("loading rpck file: {:#?}", &path);
             if packm_ptr.is_null() {
                 log::error!("ResourcePackManager ptr is null");
                 return aasset;
             }
-            loadfn(packm_ptr, resource_loc, cxx_out.as_mut());
+            loadfn(packm_ptr, resource_loc, cxx_ptr.as_mut());
             // Free resource location
-            if cxx_out.is_empty() {
+            if cxx_ptr.is_empty() {
                 log::info!("File was not found");
                 return aasset;
             }
             let buffer = if os_filename.as_encoded_bytes().ends_with(b".material.bin") {
-                match process_material(man, cxx_out.as_bytes()) {
-                    Some(updated) => updated,
-                    None => cxx_out.as_bytes().to_vec(),
+                match process_material(man, cxx_ptr.as_bytes()) {
+                    Some(updated) => BufferCursor::Vec(Cursor::new(updated)),
+                    None => BufferCursor::Cxx(Cursor::new(cxx_storage)),
                 }
             } else {
-                cxx_out.as_bytes().to_vec()
+                BufferCursor::Cxx(Cursor::new(cxx_storage))
             };
-            WANTED_ASSETS
-                .get_mut()
-                .insert(AAssetPtr(aasset), Cursor::new(buffer));
+            WANTED_ASSETS.get_mut().insert(AAssetPtr(aasset), buffer);
             // We do not clean cxx string because cxx crate does that for us
             return aasset;
         }
@@ -169,30 +174,17 @@ macro_rules! handle_result {
 /// Join paths without allocating if possible, or
 /// if the joined path does not fit the buffer, then just
 /// allocate instead
-fn opt_path_join<'a>(bytes: &'a mut [u8; 128], paths: &[&Path]) -> Cow<'a, CStr> {
+fn opt_path_join<'a>(bytes: Pin<&mut CxxString>, paths: &[&Path]) {
     let total_len: usize = paths.iter().map(|p| p.as_os_str().len()).sum();
-    if total_len + 1 > 128 {
-        let mut pathbuf = PathBuf::new();
-        for path in paths {
-            pathbuf.push(path);
-        }
-        let cpath = CString::new(pathbuf.into_os_string().as_encoded_bytes())
-            .expect("Path has a null inside??, unacceptable");
-        return Cow::Owned(cpath);
-    }
+    //    bytes.rese
     let mut written = 0;
-    let mut writer = bytes.as_mut_slice();
+    let mut writer = bytes;
     for path in paths {
         let osstr = path.as_os_str().as_bytes();
         written += writer
             .write(osstr)
             .expect("Error while writing path to stack path");
     }
-    written += writer
-        .write(&[0])
-        .expect("Cannot write null byte to stack path");
-    let guh = unsafe { CStr::from_bytes_with_nul_unchecked(bytes.get_unchecked(..written)) };
-    Cow::Borrowed(guh)
 }
 fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
     let mcver = MC_VERSION.get_or_init(|| {
@@ -356,7 +348,7 @@ pub(crate) unsafe fn get_buffer(aasset: *mut AAsset) -> *const libc::c_void {
         None => return ndk_sys::AAsset_getBuffer(aasset),
     };
     // Lets hope this does not go boom boom
-    file.get_mut().as_mut_ptr().cast()
+    file.get_ref().as_ptr().cast()
 }
 
 pub(crate) unsafe fn fd_dummy(
@@ -397,7 +389,7 @@ pub(crate) unsafe fn is_alloc(aasset: *mut AAsset) -> libc::c_int {
     }
 }
 
-fn seek_facade(offset: i64, whence: libc::c_int, file: &mut Cursor<Vec<u8>>) -> i64 {
+fn seek_facade(offset: i64, whence: libc::c_int, file: &mut BufferCursor) -> i64 {
     let offset = match whence {
         libc::SEEK_SET => {
             //Let's check this so we don't mess up
@@ -428,6 +420,41 @@ fn seek_facade(offset: i64, whence: libc::c_int, file: &mut Cursor<Vec<u8>>) -> 
         Err(err) => {
             log::error!("aasset seek failed: {err}");
             -1
+        }
+    }
+}
+
+enum BufferCursor {
+    Vec(Cursor<Vec<u8>>),
+    Cxx(Cursor<StackString>),
+}
+impl Read for BufferCursor {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Vec(v) => v.read(buf),
+            Self::Cxx(cxx) => cxx.read(buf),
+        }
+    }
+}
+impl Seek for BufferCursor {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        match self {
+            Self::Vec(v) => v.seek(pos),
+            Self::Cxx(cxx) => cxx.seek(pos),
+        }
+    }
+}
+impl BufferCursor {
+    fn position(&self) -> u64 {
+        match self {
+            Self::Vec(v) => v.position(),
+            Self::Cxx(cxx) => cxx.position(),
+        }
+    }
+    fn get_ref(&self) -> &[u8] {
+        match self {
+            Self::Vec(v) => v.get_ref(),
+            Self::Cxx(cxx) => cxx.get_ref().as_ref(),
         }
     }
 }
