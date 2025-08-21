@@ -1,3 +1,5 @@
+//#[deny(indexing_slicing)]
+
 use std::{
     ffi::CStr,
     fs::{self, File},
@@ -65,8 +67,17 @@ pub fn setup_logging() {
     );
 }
 #[ctor::ctor]
-fn main() {
+fn safe_setup() {
     setup_logging();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        log::error!("Thread crashed: {}", panic_info);
+    }));
+    //    let start = std::panic::catch_unwind(|| {
+    // Let it crash and burn if anything happens
+    main();
+    //    });
+}
+fn main() {
     log::info!("Starting");
     let mcmap = find_minecraft_library_manually()
         .expect("Cannot find libminecraftpe.so in memory maps - device not supported");
@@ -141,7 +152,7 @@ fn find_signatures(signatures: &[Pattern<80>], range: SimpleMapRange) -> Option<
             sig.simd_search(libbytes)
         };
         let addr = match addr {
-            Some(val) => libbytes[val..].as_ptr(),
+            Some(val) => libbytes.as_ptr() as usize + val,
             None => {
                 log::error!("Cannot find signature");
                 continue;
@@ -149,7 +160,7 @@ fn find_signatures(signatures: &[Pattern<80>], range: SimpleMapRange) -> Option<
         };
         #[cfg(target_arch = "arm")]
         let addr = unsafe { addr.offset(1) };
-        return Some(addr);
+        return Some(addr as *const u8);
     }
     None
 }
@@ -203,7 +214,7 @@ hook_fn! {
         let result = call_original(this, unk1, unk2, needs_init);
         log::info!("RPM pointer has been obtained");
         crate::PACKM_OBJ.store(this, Ordering::Release);
-        crate::RPM_LOAD.set(crate::get_load(this)).unwrap();
+        crate::RPM_LOAD.set(crate::get_load(this)).expect("Load function is only hooked once");
         // Not doing this just adds overhead
         self_disable();
         log::info!("hook exit");
