@@ -40,3 +40,6 @@ crate-type = ["cdylib"]
 
 [build-dependencies]
 cc = "1.1.24"
+[lints.clippy]
+indexing_slicing = "deny"
+unwrap_used = "deny"

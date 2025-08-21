@@ -1,3 +1,6 @@
+//Explanation: Aasset is NOT thread-safe anyways so we will not try adding thread safety either
+#![allow(static_mut_refs)]
+
 use crate::ResourceLocation;
 use libc::{off64_t, off_t};
 use materialbin::{
@@ -10,12 +13,16 @@ use once_cell::sync::Lazy;
 use scroll::Pread;
 use std::{
     borrow::Cow,
+    cell::UnsafeCell,
     collections::HashMap,
     ffi::{CStr, CString, OsStr},
     io::{self, Cursor, Read, Seek, Write},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, atomic::Ordering, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
 };
 
 // This makes me feel wrong... but all we will do is compare the pointer
@@ -28,8 +35,8 @@ unsafe impl Send for AAssetPtr {}
 static MC_VERSION: OnceLock<Option<MinecraftVersion>> = OnceLock::new();
 static IS_1_21_100: AtomicBool = AtomicBool::new(false);
 // The assets we have registered to replace data about
-static WANTED_ASSETS: Lazy<Mutex<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static mut WANTED_ASSETS: Lazy<UnsafeCell<HashMap<AAssetPtr, Cursor<Vec<u8>>>>> =
+    Lazy::new(|| UnsafeCell::new(HashMap::new()));
 
 fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
     let mut file = match get_uitext(man) {
@@ -96,7 +103,7 @@ pub(crate) unsafe fn open(
     // This is meant to strip the new "asset" folder path so we can be compatible with other versions
     let stripped = match c_path.strip_prefix("assets/") {
         Ok(yay) => yay,
-        Err(e) => c_path,
+        Err(_e) => c_path,
     };
     // Folder paths to replace and with what
     let replacement_list = folder_list! {
@@ -139,8 +146,9 @@ pub(crate) unsafe fn open(
             } else {
                 cxx_out.as_bytes().to_vec()
             };
-            let mut wanted_lock = WANTED_ASSETS.lock().unwrap();
-            wanted_lock.insert(AAssetPtr(aasset), Cursor::new(buffer));
+            WANTED_ASSETS
+                .get_mut()
+                .insert(AAssetPtr(aasset), Cursor::new(buffer));
             // We do not clean cxx string because cxx crate does that for us
             return aasset;
         }
@@ -153,7 +161,7 @@ macro_rules! handle_result {
             Ok(val) => val,
             Err(e) => {
                 log::error!("{e}");
-                -1
+                return -1;
             }
         }
     };
@@ -168,17 +176,22 @@ fn opt_path_join<'a>(bytes: &'a mut [u8; 128], paths: &[&Path]) -> Cow<'a, CStr>
         for path in paths {
             pathbuf.push(path);
         }
-        let cpath = CString::new(pathbuf.into_os_string().as_encoded_bytes()).unwrap();
+        let cpath = CString::new(pathbuf.into_os_string().as_encoded_bytes())
+            .expect("Path has a null inside??, unacceptable");
         return Cow::Owned(cpath);
     }
-
+    let mut written = 0;
     let mut writer = bytes.as_mut_slice();
     for path in paths {
         let osstr = path.as_os_str().as_bytes();
-        writer.write(osstr).unwrap();
+        written += writer
+            .write(osstr)
+            .expect("Error while writing path to stack path");
     }
-    writer.write(&[0]).unwrap();
-    let guh = CStr::from_bytes_until_nul(bytes).unwrap();
+    written += writer
+        .write(&[0])
+        .expect("Cannot write null byte to stack path");
+    let guh = unsafe { CStr::from_bytes_with_nul_unchecked(bytes.get_unchecked(..written)) };
     Cow::Borrowed(guh)
 }
 fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
@@ -229,39 +242,33 @@ fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
         for variants in &mut pass.variants {
             for (stage, code) in &mut variants.shader_codes {
                 if stage.stage == ShaderStage::Vertex {
-                    let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
+                    let mut bgfx: BgfxShader = code
+                        .bgfx_shader_data
+                        .pread(0)
+                        .expect("Invalid bgfx shader data");
                     replace_old_lightmap(&mut bgfx.code, &finder);
                     code.bgfx_shader_data.clear();
-                    bgfx.write(&mut code.bgfx_shader_data).unwrap();
+                    bgfx.write(&mut code.bgfx_shader_data)
+                        .expect("Writer should not have failed");
                 }
             }
         }
     }
 }
 fn replace_old_lightmap(codebuf: &mut Vec<u8>, finder: &Finder) {
-    //     let pattern = b"v_lightmapUV = a_texcoord1;";
-    //     let replace_with = b"
-    // v_lightmapUV = vec2(
-    //     clamp(float(uint(floor(a_texcoord1.x * 255.0)) & 15u) * 0.0625, 0.0, 1.0),
-    //     clamp(float((uint(floor(a_texcoord1.x * 255.0)) & 240u) >> 4) * 0.0625, 0.0, 1.0)
-    // );";
     let pattern = b"void main";
     let replace_with = b"
 #define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
 void main";
-    let sus = match finder.find(codebuf) {
-        Some(yay) => yay,
-        None => {
-            println!("oops");
-            return;
-        }
+    let Some(sus) = finder.find(codebuf) else {
+        println!("oops");
+        return;
     };
     codebuf.splice(sus..sus + pattern.len(), *replace_with);
 }
 
 pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_int) -> off64_t {
-    let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
-    let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
+    let file = match WANTED_ASSETS.get_mut().get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_seek64(aasset, off, whence),
     };
@@ -269,7 +276,7 @@ pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_i
 }
 
 pub(crate) unsafe fn seek(aasset: *mut AAsset, off: off_t, whence: libc::c_int) -> off_t {
-    let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_seek(aasset, off, whence),
@@ -282,7 +289,7 @@ pub(crate) unsafe fn read(
     buf: *mut libc::c_void,
     count: libc::size_t,
 ) -> libc::c_int {
-    let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_read(aasset, buf, count),
@@ -300,7 +307,7 @@ pub(crate) unsafe fn read(
 }
 
 pub(crate) unsafe fn len(aasset: *mut AAsset) -> off_t {
-    let wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_getLength(aasset),
@@ -309,7 +316,7 @@ pub(crate) unsafe fn len(aasset: *mut AAsset) -> off_t {
 }
 
 pub(crate) unsafe fn len64(aasset: *mut AAsset) -> off64_t {
-    let wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_getLength64(aasset),
@@ -318,7 +325,7 @@ pub(crate) unsafe fn len64(aasset: *mut AAsset) -> off64_t {
 }
 
 pub(crate) unsafe fn rem(aasset: *mut AAsset) -> off_t {
-    let wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_getRemainingLength(aasset),
@@ -327,7 +334,7 @@ pub(crate) unsafe fn rem(aasset: *mut AAsset) -> off_t {
 }
 
 pub(crate) unsafe fn rem64(aasset: *mut AAsset) -> off64_t {
-    let wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_getRemainingLength64(aasset),
@@ -336,14 +343,14 @@ pub(crate) unsafe fn rem64(aasset: *mut AAsset) -> off64_t {
 }
 
 pub(crate) unsafe fn close(aasset: *mut AAsset) {
-    let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     if wanted_assets.remove(&AAssetPtr(aasset)).is_none() {
         ndk_sys::AAsset_close(aasset);
     }
 }
 
 pub(crate) unsafe fn get_buffer(aasset: *mut AAsset) -> *const libc::c_void {
-    let mut wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_getBuffer(aasset),
@@ -357,7 +364,7 @@ pub(crate) unsafe fn fd_dummy(
     out_start: *mut off_t,
     out_len: *mut off_t,
 ) -> libc::c_int {
-    let wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => {
             log::error!("WE GOT BUSTED NOOO");
@@ -372,7 +379,7 @@ pub(crate) unsafe fn fd_dummy64(
     out_start: *mut off64_t,
     out_len: *mut off64_t,
 ) -> libc::c_int {
-    let wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => {
             log::error!("WE GOT BUSTED NOOO");
@@ -383,7 +390,7 @@ pub(crate) unsafe fn fd_dummy64(
 }
 
 pub(crate) unsafe fn is_alloc(aasset: *mut AAsset) -> libc::c_int {
-    let wanted_assets = WANTED_ASSETS.lock().unwrap();
+    let wanted_assets = WANTED_ASSETS.get_mut();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => false as libc::c_int,
         None => ndk_sys::AAsset_isAllocated(aasset),
