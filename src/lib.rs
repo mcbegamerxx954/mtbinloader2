@@ -1,5 +1,5 @@
 //#[deny(indexing_slicing)]
-
+mod cpp_string;
 use std::{
     ffi::CStr,
     fs::{self, File},
