@@ -1,12 +1,9 @@
 //#[deny(indexing_slicing)]
 mod cpp_string;
 use std::{
-    ffi::CStr,
-    fs::{self, File},
+    fs,
     pin::Pin,
     ptr::null_mut,
-    slice::Split,
-    str::SplitWhitespace,
     sync::{atomic::AtomicPtr, OnceLock},
 };
 mod aasset;
@@ -42,17 +39,22 @@ const RPMC_PATTERNS: [Pattern<80>; 2] = [
 
 // Smart pointer for ResourceLocation
 #[repr(transparent)]
-
 pub struct ResourceLocation(*mut c_void);
+impl Default for ResourceLocation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResourceLocation {
-    pub fn new() -> ResourceLocation {
+    pub fn new() -> Self {
         unsafe { resource_location_init() }
     }
     pub fn get_path<'a>(&mut self) -> Pin<&'a mut CxxString> {
-        // SAFETY: C++ will copy this string so its alright
+        // SAFETY: We just did not force it to be pin since then borrow checker gets angry
         unsafe {
             let ptr = resource_location_path(self.0);
-            return transmute(ptr);
+            transmute(ptr)
         }
     }
 }
@@ -80,10 +82,8 @@ fn safe_setup() {
     std::panic::set_hook(Box::new(move |panic_info| {
         log::error!("Thread crashed: {}", panic_info);
     }));
-    //    let start = std::panic::catch_unwind(|| {
     // Let it crash and burn if anything happens
     main();
-    //    });
 }
 fn main() {
     log::info!("Starting");
@@ -106,12 +106,12 @@ struct SimpleMapRange {
 
 impl SimpleMapRange {
     /// Get the address where this range starts
-    fn start(&self) -> usize {
+    const fn start(&self) -> usize {
         self.start
     }
 
     /// Get the address where this range ends
-    fn size(&self) -> usize {
+    const fn size(&self) -> usize {
         self.size
     }
 }
@@ -142,7 +142,7 @@ fn parse_range(buf: &[u8]) -> Option<(&[u8], &[u8])> {
     let mut line = buf.split(|v| v.is_ascii_whitespace());
     let addr_range = line.next()?;
     let perms = line.next()?;
-    let pathname = line.last()?;
+    let pathname = line.next_back()?;
     if perms.contains(&b'x') && pathname.ends_with(b"libminecraftpe.so") {
         return addr_range.split_once_str(b"-");
     }
@@ -182,7 +182,7 @@ macro_rules! cast_array {
         ]
     }
 }
-/// Set up the asset manager hooks so we control apk file access
+/// Set up the asset manager hooks so we control APK file access
 pub fn hook_aaset() {
     let lib_entry = find_lib("libminecraftpe").expect("Cannot find minecraftpe");
     let dyn_lib = DynamicLibrary::initialize(lib_entry).expect("Failed to find mc info");
@@ -205,14 +205,16 @@ pub fn hook_aaset() {
     //The actual work
     replace_plt_functions(&dyn_lib, asset_fn_list);
 }
-/// Find some library's plt
+/// Find some library's PLT
 fn find_lib<'a>(target_name: &str) -> Option<plt_rs::LoadedLibrary<'a>> {
     let loaded_modules = plt_rs::collect_modules();
     loaded_modules
         .into_iter()
         .find(|lib| lib.name().contains(target_name))
 }
+// A resource pack manager object
 pub static PACKM_OBJ: AtomicPtr<libc::c_void> = AtomicPtr::new(null_mut());
+// The resource pack manager load function
 pub static RPM_LOAD: OnceLock<RpmLoadFn> = OnceLock::new();
 
 hook_fn! {

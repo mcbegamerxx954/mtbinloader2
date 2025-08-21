@@ -15,18 +15,18 @@ pub struct StackString {
     space: MaybeUninit<[usize; 8]>,
 }
 impl AsRef<[u8]> for StackString {
-    fn as_ref<'a>(&'a self) -> &'a [u8] {
+    fn as_ref(&self) -> &[u8] {
         unsafe {
             let this = &*self.space.as_ptr().cast::<MaybeUninit<CxxString>>();
             let cxxptr = &*this.as_ptr();
-            return cxxptr.as_bytes();
+            cxxptr.as_bytes()
         }
     }
 }
 #[allow(missing_docs)]
 impl StackString {
-    pub fn new() -> Self {
-        StackString {
+    pub const fn new() -> Self {
+        Self {
             space: MaybeUninit::uninit(),
         }
     }

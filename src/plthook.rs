@@ -18,7 +18,8 @@ fn replace_plt_function(base_addr: usize, offset: usize, replacement: *const u8)
     const PTR_LEN: usize = std::mem::size_of::<usize>();
     unsafe {
         // Set the memory page to read, write
-        let _handle = protect_with_handle(plt_fn_ptr, PTR_LEN, Protection::READ_WRITE).unwrap();
+        let _handle = protect_with_handle(plt_fn_ptr, PTR_LEN, Protection::READ_WRITE)
+            .expect("Mprotect failed");
         // Replace the function address
         plt_fn_ptr.write_unaligned(replacement);
     }
