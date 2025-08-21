@@ -1,9 +1,9 @@
 //Explanation: Aasset is NOT thread-safe anyways so we will not try adding thread safety either
 #![allow(static_mut_refs)]
 
-use crate::{cpp_string::StackString, ResourceLocation};
+use crate::{cpp_string::ResourceLocation, cpp_string::StackString};
 use cxx::CxxString;
-use libc::{off64_t, off_t};
+use libc::{c_char, c_int, c_void, off64_t, off_t, size_t};
 use materialbin::{
     bgfx_shader::BgfxShader, pass::ShaderStage, CompiledMaterialDefinition, MinecraftVersion,
 };
@@ -13,13 +13,12 @@ use ndk_sys::{AAsset, AAssetManager};
 use once_cell::sync::Lazy;
 use scroll::Pread;
 use std::{
-    borrow::Cow,
     cell::UnsafeCell,
     collections::HashMap,
-    ffi::{CStr, CString, OsStr},
+    ffi::{CStr, OsStr},
     io::{self, Cursor, Read, Seek, Write},
     os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
+    path::Path,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -86,27 +85,19 @@ macro_rules! folder_list {
         ]
     }
 }
-pub(crate) unsafe fn open(
+pub unsafe extern "C" fn open(
     man: *mut AAssetManager,
-    fname: *const libc::c_char,
-    mode: libc::c_int,
-) -> *mut ndk_sys::AAsset {
+    fname: *const c_char,
+    mode: c_int,
+) -> *mut AAsset {
     // This is where UB can happen, but we are merely a hook.
     let aasset = unsafe { ndk_sys::AAssetManager_open(man, fname, mode) };
     let c_str = unsafe { CStr::from_ptr(fname) };
     let raw_cstr = c_str.to_bytes();
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
-    // Extract filename
-    let Some(os_filename) = c_path.file_name() else {
-        log::warn!("Path had no filename: {c_path:?}");
-        return aasset;
-    };
     // This is meant to strip the new "asset" folder path so we can be compatible with other versions
-    let stripped = match c_path.strip_prefix("assets/") {
-        Ok(yay) => yay,
-        Err(_e) => c_path,
-    };
+    let stripped = c_path.strip_prefix("assets/").unwrap_or(c_path);
     // Folder paths to replace and with what
     let replacement_list = folder_list! {
         apk: "gui/dist/hbui/" -> pack: "hbui/",
@@ -119,33 +110,30 @@ pub(crate) unsafe fn open(
         if let Ok(file) = stripped.strip_prefix(replacement.0) {
             let mut cxx_storage = StackString::new();
             let mut cxx_ptr = cxx_storage.init("");
-            let loadfn = match crate::RPM_LOAD.get() {
-                Some(ptr) => ptr,
-                None => {
-                    log::warn!("ResourcePackManager fn is not ready yet?");
-                    return aasset;
-                }
+            let Some(loadfn) = crate::RPM_LOAD.get() else {
+                log::warn!("ResourcePackManager fn is not ready yet?");
+                return aasset;
             };
-            //            let mut arraybuf = [0; 158];
-            //
-
             let mut resource_loc = ResourceLocation::new();
             let mut path = ResourceLocation::get_path(&mut resource_loc);
             opt_path_join(path.as_mut(), &[Path::new(replacement.1), file]);
             let packm_ptr = crate::PACKM_OBJ.load(Ordering::Acquire);
-
             log::info!("loading rpck file: {:#?}", &path);
             if packm_ptr.is_null() {
                 log::error!("ResourcePackManager ptr is null");
                 return aasset;
             }
             loadfn(packm_ptr, resource_loc, cxx_ptr.as_mut());
-            // Free resource location
             if cxx_ptr.is_empty() {
-                log::info!("File was not found");
+                log::info!("Cannot find file: {}", path.as_ref());
                 return aasset;
             }
-            let buffer = if os_filename.as_encoded_bytes().ends_with(b".material.bin") {
+            log::info!("Loaded ResourcePack file: {}", path.as_ref());
+            let buffer = if file
+                .as_os_str()
+                .as_encoded_bytes()
+                .ends_with(b".material.bin")
+            {
                 match process_material(man, cxx_ptr.as_bytes()) {
                     Some(updated) => BufferCursor::Vec(Cursor::new(updated)),
                     None => BufferCursor::Cxx(Cursor::new(cxx_storage)),
@@ -154,11 +142,11 @@ pub(crate) unsafe fn open(
                 BufferCursor::Cxx(Cursor::new(cxx_storage))
             };
             WANTED_ASSETS.get_mut().insert(AAssetPtr(aasset), buffer);
-            // We do not clean cxx string because cxx crate does that for us
+            // ResourceLocation gets dropped (also cxx_storage if its not needed)
             return aasset;
         }
     }
-    return aasset;
+    aasset
 }
 macro_rules! handle_result {
     ($expr:expr) => {
@@ -171,17 +159,16 @@ macro_rules! handle_result {
         }
     };
 }
-/// Join paths without allocating if possible, or
-/// if the joined path does not fit the buffer, then just
-/// allocate instead
-fn opt_path_join<'a>(bytes: Pin<&mut CxxString>, paths: &[&Path]) {
+// This lint is not really applicable
+#[allow(clippy::unused_io_amount)]
+/// Join paths directly into a c++ string
+fn opt_path_join(mut bytes: Pin<&mut CxxString>, paths: &[&Path]) {
     let total_len: usize = paths.iter().map(|p| p.as_os_str().len()).sum();
-    //    bytes.rese
-    let mut written = 0;
+    bytes.as_mut().reserve(total_len);
     let mut writer = bytes;
     for path in paths {
         let osstr = path.as_os_str().as_bytes();
-        written += writer
+        writer
             .write(osstr)
             .expect("Error while writing path to stack path");
     }
@@ -259,7 +246,7 @@ void main";
     codebuf.splice(sus..sus + pattern.len(), *replace_with);
 }
 
-pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_int) -> off64_t {
+pub unsafe extern "C" fn seek64(aasset: *mut AAsset, off: off64_t, whence: c_int) -> off64_t {
     let file = match WANTED_ASSETS.get_mut().get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_seek64(aasset, off, whence),
@@ -267,20 +254,16 @@ pub(crate) unsafe fn seek64(aasset: *mut AAsset, off: off64_t, whence: libc::c_i
     handle_result!(seek_facade(off, whence, file).try_into())
 }
 
-pub(crate) unsafe fn seek(aasset: *mut AAsset, off: off_t, whence: libc::c_int) -> off_t {
+pub unsafe extern "C" fn seek(aasset: *mut AAsset, off: off_t, whence: c_int) -> off_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_seek(aasset, off, whence),
     };
-    handle_result!(seek_facade(off.into(), whence, file).try_into())
+    handle_result!(seek_facade(off, whence, file).try_into())
 }
 
-pub(crate) unsafe fn read(
-    aasset: *mut AAsset,
-    buf: *mut libc::c_void,
-    count: libc::size_t,
-) -> libc::c_int {
+pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size_t) -> c_int {
     let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -292,13 +275,13 @@ pub(crate) unsafe fn read(
         Ok(n) => n,
         Err(e) => {
             log::warn!("failed fake aaset read: {e}");
-            return -1 as libc::c_int;
+            return -1 as c_int;
         }
     };
     handle_result!(read_total.try_into())
 }
 
-pub(crate) unsafe fn len(aasset: *mut AAsset) -> off_t {
+pub unsafe extern "C" fn len(aasset: *mut AAsset) -> off_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -307,7 +290,7 @@ pub(crate) unsafe fn len(aasset: *mut AAsset) -> off_t {
     handle_result!(file.get_ref().len().try_into())
 }
 
-pub(crate) unsafe fn len64(aasset: *mut AAsset) -> off64_t {
+pub unsafe extern "C" fn len64(aasset: *mut AAsset) -> off64_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -316,7 +299,7 @@ pub(crate) unsafe fn len64(aasset: *mut AAsset) -> off64_t {
     handle_result!(file.get_ref().len().try_into())
 }
 
-pub(crate) unsafe fn rem(aasset: *mut AAsset) -> off_t {
+pub unsafe extern "C" fn rem(aasset: *mut AAsset) -> off_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -325,7 +308,7 @@ pub(crate) unsafe fn rem(aasset: *mut AAsset) -> off_t {
     handle_result!((file.get_ref().len() - file.position() as usize).try_into())
 }
 
-pub(crate) unsafe fn rem64(aasset: *mut AAsset) -> off64_t {
+pub unsafe extern "C" fn rem64(aasset: *mut AAsset) -> off64_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -334,28 +317,28 @@ pub(crate) unsafe fn rem64(aasset: *mut AAsset) -> off64_t {
     handle_result!((file.get_ref().len() - file.position() as usize).try_into())
 }
 
-pub(crate) unsafe fn close(aasset: *mut AAsset) {
+pub unsafe extern "C" fn close(aasset: *mut AAsset) {
     let wanted_assets = WANTED_ASSETS.get_mut();
     if wanted_assets.remove(&AAssetPtr(aasset)).is_none() {
         ndk_sys::AAsset_close(aasset);
     }
 }
 
-pub(crate) unsafe fn get_buffer(aasset: *mut AAsset) -> *const libc::c_void {
+pub unsafe extern "C" fn get_buffer(aasset: *mut AAsset) -> *const c_void {
     let wanted_assets = WANTED_ASSETS.get_mut();
     let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
         None => return ndk_sys::AAsset_getBuffer(aasset),
     };
-    // Lets hope this does not go boom boom
+    // Let's hope this does not go boom boom
     file.get_ref().as_ptr().cast()
 }
 
-pub(crate) unsafe fn fd_dummy(
+pub unsafe extern "C" fn fd_dummy(
     aasset: *mut AAsset,
     out_start: *mut off_t,
     out_len: *mut off_t,
-) -> libc::c_int {
+) -> c_int {
     let wanted_assets = WANTED_ASSETS.get_mut();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => {
@@ -366,11 +349,11 @@ pub(crate) unsafe fn fd_dummy(
     }
 }
 
-pub(crate) unsafe fn fd_dummy64(
+pub unsafe extern "C" fn fd_dummy64(
     aasset: *mut AAsset,
     out_start: *mut off64_t,
     out_len: *mut off64_t,
-) -> libc::c_int {
+) -> c_int {
     let wanted_assets = WANTED_ASSETS.get_mut();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => {
@@ -381,15 +364,15 @@ pub(crate) unsafe fn fd_dummy64(
     }
 }
 
-pub(crate) unsafe fn is_alloc(aasset: *mut AAsset) -> libc::c_int {
+pub unsafe extern "C" fn is_alloc(aasset: *mut AAsset) -> c_int {
     let wanted_assets = WANTED_ASSETS.get_mut();
     match wanted_assets.get(&AAssetPtr(aasset)) {
-        Some(_) => false as libc::c_int,
+        Some(_) => false as c_int,
         None => ndk_sys::AAsset_isAllocated(aasset),
     }
 }
 
-fn seek_facade(offset: i64, whence: libc::c_int, file: &mut BufferCursor) -> i64 {
+fn seek_facade(offset: i64, whence: c_int, file: &mut BufferCursor) -> i64 {
     let offset = match whence {
         libc::SEEK_SET => {
             //Let's check this so we don't mess up
