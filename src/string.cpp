@@ -13,11 +13,13 @@ struct ResourceLocation {
     ResourceLocation(const std::string& path) : mPath(path) {}
 };
 extern "C" {
-  ResourceLocation* resource_location_init(const char* strptr, size_t size) {
+  ResourceLocation* resource_location_init() {
     ResourceLocation* loc = new ResourceLocation;
-    std::string rust_str(strptr, size);
-    loc->mPath.assign(rust_str);
+    loc->mPath = "";
     return loc;
+  }
+  std::string* resource_location_path(ResourceLocation* loc) {
+    return &loc->mPath;
   }
   void resource_location_free(ResourceLocation* loc) {
     delete loc;

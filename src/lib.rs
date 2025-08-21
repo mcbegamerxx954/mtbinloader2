@@ -42,11 +42,18 @@ const RPMC_PATTERNS: [Pattern<80>; 2] = [
 
 // Smart pointer for ResourceLocation
 #[repr(transparent)]
+
 pub struct ResourceLocation(*mut c_void);
 impl ResourceLocation {
-    pub fn from_str(str: &CStr) -> ResourceLocation {
+    pub fn new() -> ResourceLocation {
+        unsafe { resource_location_init() }
+    }
+    pub fn get_path<'a>(&mut self) -> Pin<&'a mut CxxString> {
         // SAFETY: C++ will copy this string so its alright
-        unsafe { resource_location_init(str.as_ptr(), str.count_bytes()) }
+        unsafe {
+            let ptr = resource_location_path(self.0);
+            return transmute(ptr);
+        }
     }
 }
 impl Drop for ResourceLocation {
@@ -57,7 +64,8 @@ impl Drop for ResourceLocation {
 }
 // Linking against string.cpp
 extern "C" {
-    fn resource_location_init(strptr: *const libc::c_char, size: libc::size_t) -> ResourceLocation;
+    fn resource_location_init() -> ResourceLocation;
+    fn resource_location_path(loc: *mut c_void) -> *mut CxxString;
     fn resource_location_free(loc: *mut c_void);
 }
 // Just setup the logger so we see those logcats
