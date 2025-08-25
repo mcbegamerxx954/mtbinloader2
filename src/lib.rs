@@ -128,7 +128,7 @@ fn find_signatures(signatures: &[Pattern<80>], range: SimpleMapRange) -> Option<
             sig.simd_search(libbytes)
         };
         let addr = match addr {
-            Some(val) => libbytes.as_ptr() as usize + val,
+            Some(val) => unsafe { libbytes.as_ptr().byte_add(val) },
             None => {
                 log::error!("Cannot find signature");
                 continue;
