@@ -24,7 +24,7 @@ jobs:
       - name: Setup Docker Cache
         uses: ScribeMD/docker-cache@0.5.0
         with:
-          key: docker-${{ runner.os }}-${{ steps.get-version.outputs.version }}
+          key: docker-${{ runner.os }}-${{ steps.get-version.outputs.version }}-${{ matrix.target }}
       - name: Install cross-compilation tools
         uses: taiki-e/setup-cross-toolchain-action@v1
         with:
