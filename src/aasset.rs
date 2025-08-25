@@ -260,7 +260,7 @@ pub unsafe extern "C" fn seek(aasset: *mut AAsset, off: off_t, whence: c_int) ->
         Some(file) => file,
         None => return ndk_sys::AAsset_seek(aasset, off, whence),
     };
-    handle_result!(seek_facade(off, whence, file).try_into())
+    handle_result!(seek_facade(off.into(), whence, file).try_into())
 }
 
 pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size_t) -> c_int {
