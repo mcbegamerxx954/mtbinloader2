@@ -45,7 +45,7 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
     let mut file = match get_uitext(man) {
         Some(asset) => asset,
         None => {
-            log::error!("Shader fixing is disabled as no mc version was found");
+            log::error!("Shader fixing is disabled as RenderChunk was not found");
             return None;
         }
     };
@@ -59,11 +59,13 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
         if let Ok(_shader) = buf.pread_with::<CompiledMaterialDefinition>(0, version) {
             log::info!("Mc version is {version}");
             if memchr::memmem::find(&buf, b"v_dithering").is_some() {
+                log::warn!("mc is 1.21.100 and higher");
                 IS_1_21_100.store(true, Ordering::Release);
             }
             return Some(version);
         };
     }
+    log::warn!("Cannot detect mc version, autofix disabled");
     None
 }
 
@@ -154,6 +156,7 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
             && (material.name == "RenderChunk" || material.name == "RenderChunkPrepass");
         // Prevent some work
         if version == mcver && !needs_lightmap_fix {
+            log::info!("Did not fix mtbin, mtversion: {version}, fixneeded: {needs_lightmap_fix}");
             return None;
         }
         if needs_lightmap_fix {
@@ -176,7 +179,13 @@ fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
         for variants in &mut pass.variants {
             for (stage, code) in &mut variants.shader_codes {
                 if stage.stage == ShaderStage::Vertex {
-                    replace_old_lightmap(&mut code.bgfx_shader_data.code, &finder);
+                    let blob = &mut code.bgfx_shader_data;
+                    let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
+                        continue;
+                    };
+                    replace_old_lightmap(&mut bgfx.code, &finder);
+                    blob.clear();
+                    bgfx.write(blob);
                 }
             }
         }
