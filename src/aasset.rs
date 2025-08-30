@@ -8,7 +8,7 @@ use materialbin::{
     bgfx_shader::BgfxShader, pass::ShaderStage, CompiledMaterialDefinition, MinecraftVersion,
 };
 use memchr::memmem::Finder;
-use ndk::asset::Asset;
+use ndk::asset::{Asset, AssetManager};
 use ndk_sys::{AAsset, AAssetManager};
 use once_cell::sync::Lazy;
 use scroll::Pread;
@@ -17,15 +17,17 @@ use std::{
     collections::HashMap,
     ffi::{CStr, OsStr},
     io::{self, Cursor, Read, Seek, Write},
+    ops::{Deref, DerefMut},
     os::unix::ffi::OsStrExt,
-    path::Path,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        OnceLock,
+        Arc, LazyLock, Mutex, OnceLock,
     },
 };
-
+static MC_FILELOADER: LazyLock<Mutex<FileLoader>> =
+    LazyLock::new(|| Mutex::new(FileLoader { last_buffer: None }));
 // This makes me feel wrong... but all we will do is compare the pointer
 // and the struct will be used in a mutex so this is safe??
 #[derive(PartialEq, Eq, Hash)]
@@ -36,7 +38,7 @@ unsafe impl Send for AAssetPtr {}
 static MC_VERSION: OnceLock<Option<MinecraftVersion>> = OnceLock::new();
 static IS_1_21_100: AtomicBool = AtomicBool::new(false);
 // The assets we have registered to replace data about
-static mut WANTED_ASSETS: Lazy<UnsafeCell<HashMap<AAssetPtr, BufferCursor>>> =
+static mut WANTED_ASSETS: Lazy<UnsafeCell<HashMap<AAssetPtr, Buffer>>> =
     Lazy::new(|| UnsafeCell::new(HashMap::new()));
 
 fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> {
@@ -92,61 +94,23 @@ pub unsafe extern "C" fn open(
 ) -> *mut AAsset {
     // This is where UB can happen, but we are merely a hook.
     let aasset = unsafe { ndk_sys::AAssetManager_open(man, fname, mode) };
+    let pointer = match std::ptr::NonNull::new(man) {
+        Some(yay) => yay,
+        None => {
+            log::warn!("AssetManager is null?, preposterous, mc detection failed");
+            return aasset;
+        }
+    };
+    let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
     let c_str = unsafe { CStr::from_ptr(fname) };
     let raw_cstr = c_str.to_bytes();
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
-    // This is meant to strip the new "asset" folder path so we can be compatible with other versions
-    let stripped = c_path.strip_prefix("assets/").unwrap_or(c_path);
-    // Folder paths to replace and with what
-    let replacement_list = folder_list! {
-        apk: "gui/dist/hbui/" -> pack: "hbui/",
-        apk: "skin_packs/persona/" -> pack: "persona/",
-        apk: "renderer/" -> pack: "renderer/",
-        apk: "resource_packs/vanilla/cameras/" -> pack: "vanilla_cameras/",
-    };
-    for replacement in replacement_list {
-        // Remove the prefix we want to change
-        if let Ok(file) = stripped.strip_prefix(replacement.0) {
-            let mut cxx_storage = StackString::new();
-            let mut cxx_ptr = cxx_storage.init("");
-            let Some(loadfn) = crate::RPM_LOAD.get() else {
-                log::warn!("ResourcePackManager fn is not ready yet?");
-                return aasset;
-            };
-            let mut resource_loc = ResourceLocation::new();
-            let mut path = ResourceLocation::get_path(&mut resource_loc);
-            opt_path_join(path.as_mut(), &[Path::new(replacement.1), file]);
-            let packm_ptr = crate::PACKM_OBJ.load(Ordering::Acquire);
-            log::info!("loading rpck file: {:#?}", &path);
-            if packm_ptr.is_null() {
-                log::error!("ResourcePackManager ptr is null");
-                return aasset;
-            }
-            loadfn(packm_ptr, resource_loc, cxx_ptr.as_mut());
-            if cxx_ptr.is_empty() {
-                log::info!("Cannot find file: {}", path.as_ref());
-                return aasset;
-            }
-            log::info!("Loaded ResourcePack file: {}", path.as_ref());
-            let buffer = if file
-                .as_os_str()
-                .as_encoded_bytes()
-                .ends_with(b".material.bin")
-            {
-                match process_material(man, cxx_ptr.as_bytes()) {
-                    Some(updated) => BufferCursor::Vec(Cursor::new(updated)),
-                    None => BufferCursor::Cxx(Cursor::new(cxx_storage)),
-                }
-            } else {
-                BufferCursor::Cxx(Cursor::new(cxx_storage))
-            };
-            WANTED_ASSETS.get_mut().insert(AAssetPtr(aasset), buffer);
-            // ResourceLocation gets dropped (also cxx_storage if its not needed)
-            return aasset;
-        }
+    let mut sus = MC_FILELOADER.lock().unwrap();
+    if let Some(yay) = sus.get_file(c_path, manager) {
+        WANTED_ASSETS.get_mut().insert(AAssetPtr(aasset), yay);
     }
-    aasset
+    return aasset;
 }
 macro_rules! handle_result {
     ($expr:expr) => {
@@ -173,18 +137,8 @@ fn opt_path_join(mut bytes: Pin<&mut CxxString>, paths: &[&Path]) {
             .expect("Error while writing path to stack path");
     }
 }
-fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
-    let mcver = MC_VERSION.get_or_init(|| {
-        let pointer = match std::ptr::NonNull::new(man) {
-            Some(yay) => yay,
-            None => {
-                log::warn!("AssetManager is null?, preposterous, mc detection failed");
-                return None;
-            }
-        };
-        let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
-        get_current_mcver(manager)
-    });
+fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
+    let mcver = MC_VERSION.get_or_init(|| get_current_mcver(man));
     // Just ignore if no Minecraft version was found
     let mcver = (*mcver)?;
     for version in materialbin::ALL_VERSIONS {
@@ -204,6 +158,7 @@ fn process_material(man: *mut AAssetManager, data: &[u8]) -> Option<Vec<u8>> {
         }
         if needs_lightmap_fix {
             handle_lightmaps(&mut material);
+            log::warn!("Had to fix lightmaps for RenderChunk");
         }
         let mut output = Vec::with_capacity(data.len());
         if let Err(e) = material.write(&mut output, mcver) {
@@ -221,14 +176,7 @@ fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
         for variants in &mut pass.variants {
             for (stage, code) in &mut variants.shader_codes {
                 if stage.stage == ShaderStage::Vertex {
-                    let mut bgfx: BgfxShader = code
-                        .bgfx_shader_data
-                        .pread(0)
-                        .expect("Invalid bgfx shader data");
-                    replace_old_lightmap(&mut bgfx.code, &finder);
-                    code.bgfx_shader_data.clear();
-                    bgfx.write(&mut code.bgfx_shader_data)
-                        .expect("Writer should not have failed");
+                    replace_old_lightmap(&mut code.bgfx_shader_data.code, &finder);
                 }
             }
         }
@@ -271,7 +219,7 @@ pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size
     };
     // Reuse buffer given by caller
     let rs_buffer = core::slice::from_raw_parts_mut(buf as *mut u8, count);
-    let read_total = match file.read(rs_buffer) {
+    let read_total = match (*file).read(rs_buffer) {
         Ok(n) => n,
         Err(e) => {
             log::warn!("failed fake aaset read: {e}");
@@ -319,9 +267,10 @@ pub unsafe extern "C" fn rem64(aasset: *mut AAsset) -> off64_t {
 
 pub unsafe extern "C" fn close(aasset: *mut AAsset) {
     let wanted_assets = WANTED_ASSETS.get_mut();
-    if wanted_assets.remove(&AAssetPtr(aasset)).is_none() {
-        ndk_sys::AAsset_close(aasset);
+    if let Some(buffer) = wanted_assets.remove(&AAssetPtr(aasset)) {
+        MC_FILELOADER.lock().unwrap().last_buffer = Some(buffer);
     }
+    ndk_sys::AAsset_close(aasset);
 }
 
 pub unsafe extern "C" fn get_buffer(aasset: *mut AAsset) -> *const c_void {
@@ -372,7 +321,7 @@ pub unsafe extern "C" fn is_alloc(aasset: *mut AAsset) -> c_int {
     }
 }
 
-fn seek_facade(offset: i64, whence: c_int, file: &mut BufferCursor) -> i64 {
+fn seek_facade(offset: i64, whence: c_int, file: &mut Buffer) -> i64 {
     let offset = match whence {
         libc::SEEK_SET => {
             //Let's check this so we don't mess up
@@ -439,5 +388,89 @@ impl BufferCursor {
             Self::Vec(v) => v.get_ref(),
             Self::Cxx(cxx) => cxx.get_ref().as_ref(),
         }
+    }
+}
+
+struct FileLoader {
+    last_buffer: Option<Buffer>,
+}
+impl FileLoader {
+    fn get_file(&mut self, path: &Path, manager: AssetManager) -> Option<Buffer> {
+        let stripped = path.strip_prefix("assets/").unwrap_or(path);
+        if self.last_buffer.as_ref().is_some_and(|c| c.name == path) {
+            log::info!("Cache hit!: {:#?}", path);
+            return Some(self.last_buffer.take().unwrap());
+        } else {
+            self.last_buffer = None;
+        }
+        let replacement_list = folder_list! {
+            apk: "gui/dist/hbui/" -> pack: "hbui/",
+            apk: "skin_packs/persona/" -> pack: "persona/",
+            apk: "renderer/" -> pack: "renderer/",
+            apk: "resource_packs/vanilla/cameras/" -> pack: "vanilla_cameras/",
+        };
+        for replacement in replacement_list {
+            // Remove the prefix we want to change
+            if let Ok(file) = stripped.strip_prefix(replacement.0) {
+                let mut cxx_storage = StackString::new();
+                let mut cxx_ptr = unsafe { cxx_storage.init("") };
+                let Some(loadfn) = crate::RPM_LOAD.get() else {
+                    log::warn!("ResourcePackManager fn is not ready yet?");
+                    return None;
+                };
+                let mut resource_loc = ResourceLocation::new();
+                let mut cpppath = ResourceLocation::get_path(&mut resource_loc);
+                opt_path_join(cpppath.as_mut(), &[Path::new(replacement.1), file]);
+                let packm_ptr = crate::PACKM_OBJ.load(Ordering::Acquire);
+                if packm_ptr.is_null() {
+                    log::error!("ResourcePackManager ptr is null");
+                    return None;
+                }
+                unsafe {
+                    loadfn(packm_ptr, resource_loc, cxx_ptr.as_mut());
+                }
+                if cxx_ptr.is_empty() {
+                    log::info!("Cannot find file: {}", cpppath.as_ref());
+                    return None;
+                }
+                log::info!("Loaded ResourcePack file: {}", cpppath.as_ref());
+                let buffer = if file
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .ends_with(b".material.bin")
+                {
+                    match process_material(manager, cxx_ptr.as_bytes()) {
+                        Some(updated) => BufferCursor::Vec(Cursor::new(updated)),
+                        None => BufferCursor::Cxx(Cursor::new(cxx_storage)),
+                    }
+                } else {
+                    BufferCursor::Cxx(Cursor::new(cxx_storage))
+                };
+                let cache = Buffer::new(path.to_path_buf(), buffer);
+                // ResourceLocation gets dropped (also cxx_storage if its not needed)
+                return Some(cache);
+            }
+        }
+        None
+    }
+}
+struct Buffer {
+    name: PathBuf,
+    object: BufferCursor,
+}
+impl Buffer {
+    fn new(name: PathBuf, object: BufferCursor) -> Self {
+        Self { name, object }
+    }
+}
+impl Deref for Buffer {
+    type Target = BufferCursor;
+    fn deref(&self) -> &Self::Target {
+        &self.object
+    }
+}
+impl DerefMut for Buffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.object
     }
 }
