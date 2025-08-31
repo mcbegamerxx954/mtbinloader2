@@ -54,7 +54,7 @@ fn safe_setup() {
     main();
 }
 fn main() {
-    log::info!("Starting");
+    log::info!("Starting, mbl2 version v0.1.10-beta");
     let mcmap = find_minecraft_library_manually()
         .expect("Cannot find libminecraftpe.so in memory maps - device not supported");
     let addr = find_signatures(&RPMC_PATTERNS, mcmap).expect("No signature was found");
