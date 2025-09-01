@@ -406,11 +406,10 @@ struct FileLoader {
 impl FileLoader {
     fn get_file(&mut self, path: &Path, manager: AssetManager) -> Option<Buffer> {
         let stripped = path.strip_prefix("assets/").unwrap_or(path);
-        if self.last_buffer.as_ref().is_some_and(|c| c.name == path) {
+        if let Some(mut cache) = self.last_buffer.take_if(|c| c.name == path) {
             log::info!("Cache hit!: {:#?}", path);
-            return Some(self.last_buffer.take().unwrap());
-        } else {
-            self.last_buffer = None;
+            cache.rewind();
+            return Some(cache);
         }
         let replacement_list = folder_list! {
             apk: "gui/dist/hbui/" -> pack: "hbui/",
