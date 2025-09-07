@@ -22,7 +22,7 @@ impl Default for Options {
 }
 pub static OPTS: LazyLock<Mutex<Options>> = LazyLock::new(|| Mutex::new(Options::default()));
 #[no_mangle]
-extern "C" fn Java_dev_faizul726_mbloaderjetpack_launcherUtils_libBindings_setAutofixVersions(
+extern "C" fn Java_dev_faizul726_mbloaderjetpack_launcherUtils_libBindings_SetAutofixVersions(
     mut env: JNIEnv,
     _thiz: JObject,
     versions: jni::objects::JObjectArray,
