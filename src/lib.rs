@@ -7,6 +7,7 @@ use std::{
     sync::{atomic::AtomicPtr, OnceLock},
 };
 mod aasset;
+mod jniopts;
 mod plthook;
 use crate::plthook::replace_plt_functions;
 use bhook::hook_fn;
