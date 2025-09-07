@@ -1,11 +1,16 @@
 //Explanation: Aasset is NOT thread-safe anyways so we will not try adding thread safety either
 #![allow(static_mut_refs)]
 
-use crate::{cpp_string::ResourceLocation, cpp_string::StackString};
+use crate::{
+    cpp_string::{ResourceLocation, StackString},
+    jniopts::OPTS,
+};
 use cxx::CxxString;
 use libc::{c_char, c_int, c_void, off64_t, off_t, size_t};
 use materialbin::{
-    bgfx_shader::BgfxShader, pass::ShaderStage, CompiledMaterialDefinition, MinecraftVersion,
+    bgfx_shader::BgfxShader,
+    pass::{ShaderCode, ShaderStage},
+    CompiledMaterialDefinition, MinecraftVersion,
 };
 use memchr::memmem::Finder;
 use ndk::asset::{Asset, AssetManager};
@@ -143,7 +148,9 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
     let mcver = MC_VERSION.get_or_init(|| get_current_mcver(man));
     // Just ignore if no Minecraft version was found
     let mcver = (*mcver)?;
-    for version in materialbin::ALL_VERSIONS {
+    let opts = OPTS.lock().unwrap();
+    for version in opts.autofixer_versions.iter() {
+        let version = *version;
         let mut material: CompiledMaterialDefinition = match data.pread_with(0, version) {
             Ok(data) => data,
             Err(e) => {
@@ -153,15 +160,23 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
         };
         let needs_lightmap_fix = IS_1_21_100.load(Ordering::Acquire)
             && version != MinecraftVersion::V1_21_110
-            && (material.name == "RenderChunk" || material.name == "RenderChunkPrepass");
+            && (material.name == "RenderChunk" || material.name == "RenderChunkPrepass")
+            && opts.handle_lightmaps;
+        let needs_sampler_fix = material.name == "RenderChunk"
+            && mcver >= MinecraftVersion::V1_20_80
+            && version <= MinecraftVersion::V1_19_60
+            && opts.handle_texturelods;
         // Prevent some work
-        if version == mcver && !needs_lightmap_fix {
-            log::info!("Did not fix mtbin, mtversion: {version}, fixneeded: {needs_lightmap_fix}");
+        if version == mcver && !needs_lightmap_fix && !needs_sampler_fix {
+            log::info!("Did not fix mtbin, mtversion: {version}");
             return None;
         }
         if needs_lightmap_fix {
             handle_lightmaps(&mut material);
             log::warn!("Had to fix lightmaps for RenderChunk");
+        }
+        if needs_sampler_fix {
+            handle_samplers(&mut material);
         }
         let mut output = Vec::with_capacity(data.len());
         if let Err(e) = material.write(&mut output, mcver) {
@@ -175,6 +190,9 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
 }
 fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
     let finder = Finder::new(b"void main");
+    let replace_with = b"
+#define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
+void main";
     for (_, pass) in &mut materialbin.passes {
         for variants in &mut pass.variants {
             for (stage, code) in &mut variants.shader_codes {
@@ -183,7 +201,7 @@ fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
                     let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
                         continue;
                     };
-                    replace_old_lightmap(&mut bgfx.code, &finder);
+                    replace_bytes(&mut bgfx.code, &finder, b"void main", replace_with);
                     blob.clear();
                     bgfx.write(blob);
                 }
@@ -191,18 +209,43 @@ fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
         }
     }
 }
-fn replace_old_lightmap(codebuf: &mut Vec<u8>, finder: &Finder) {
-    let pattern = b"void main";
+fn handle_samplers(materialbin: &mut CompiledMaterialDefinition) {
+    let pattern = b"void main ()";
     let replace_with = b"
-#define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
-void main";
-    let Some(sus) = finder.find(codebuf) else {
-        println!("oops");
-        return;
-    };
-    codebuf.splice(sus..sus + pattern.len(), *replace_with);
+#if __VERSION__ >= 300
+ #define texture(tex,uv) textureLod(tex,uv,0.0)
+#else
+ #define texture2D(tex,uv) texture2DLod(tex,uv,0.0)
+#endif
+void main ()";
+    let finder = Finder::new(pattern);
+    for (_passes, pass) in &mut materialbin.passes {
+        if _passes == "AlphaTest" || _passes == "Opaque" {
+            for variants in &mut pass.variants {
+                for (stage, code) in &mut variants.shader_codes {
+                    if stage.stage == ShaderStage::Fragment && stage.platform_name == "ESSL_100" {
+                        log::info!("handle_samplers");
+                        let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
+                        replace_bytes(&mut bgfx.code, &finder, pattern, replace_with);
+                        code.bgfx_shader_data.clear();
+                        bgfx.write(&mut code.bgfx_shader_data).unwrap();
+                    }
+                }
+            }
+        }
+    }
 }
 
+fn replace_bytes(codebuf: &mut Vec<u8>, finder: &Finder, pattern: &[u8], replace_with: &[u8]) {
+    let sus = match finder.find(codebuf) {
+        Some(yay) => yay,
+        None => {
+            println!("oops");
+            return;
+        }
+    };
+    codebuf.splice(sus..sus + pattern.len(), replace_with.iter().cloned());
+}
 pub unsafe extern "C" fn seek64(aasset: *mut AAsset, off: off64_t, whence: c_int) -> off64_t {
     let file = match WANTED_ASSETS.get_mut().get_mut(&AAssetPtr(aasset)) {
         Some(file) => file,
@@ -408,7 +451,7 @@ impl FileLoader {
         let stripped = path.strip_prefix("assets/").unwrap_or(path);
         if let Some(mut cache) = self.last_buffer.take_if(|c| c.name == path) {
             log::info!("Cache hit!: {:#?}", path);
-            cache.rewind();
+            cache.rewind().unwrap();
             return Some(cache);
         }
         let replacement_list = folder_list! {
