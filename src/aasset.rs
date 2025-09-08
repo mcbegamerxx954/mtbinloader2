@@ -8,9 +8,7 @@ use crate::{
 use cxx::CxxString;
 use libc::{c_char, c_int, c_void, off64_t, off_t, size_t};
 use materialbin::{
-    bgfx_shader::BgfxShader,
-    pass::{ShaderCode, ShaderStage},
-    CompiledMaterialDefinition, MinecraftVersion,
+    bgfx_shader::BgfxShader, pass::ShaderStage, CompiledMaterialDefinition, MinecraftVersion,
 };
 use memchr::memmem::Finder;
 use ndk::asset::{Asset, AssetManager};
@@ -28,7 +26,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, LazyLock, Mutex, OnceLock,
+        LazyLock, Mutex, OnceLock,
     },
 };
 static MC_FILELOADER: LazyLock<Mutex<FileLoader>> =
@@ -203,7 +201,7 @@ void main";
                     };
                     replace_bytes(&mut bgfx.code, &finder, b"void main", replace_with);
                     blob.clear();
-                    bgfx.write(blob);
+                    let _unused = bgfx.write(blob);
                 }
             }
         }
