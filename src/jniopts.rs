@@ -22,7 +22,7 @@ impl Default for Options {
 }
 pub static OPTS: LazyLock<Mutex<Options>> = LazyLock::new(|| Mutex::new(Options::default()));
 #[no_mangle]
-extern "C" fn Java_dev_faizul726_mbloaderjetpack_launcherUtils_libBindings_SetAutofixVersions(
+extern "C" fn Java_io_bambosan_mbloader_launcherUtils_LibBindings_setAutofixVersions(
     mut env: JNIEnv,
     _thiz: JObject,
     versions: jni::objects::JObjectArray,
@@ -50,7 +50,7 @@ fn version_from_string(string: &str) -> Option<MinecraftVersion> {
     Some(mcversion)
 }
 #[no_mangle]
-extern "C" fn Java_dev_faizul726_mbloaderjetpack_launcherUtils_libBindings_SetLightmapAutofixer(
+extern "C" fn Java_io_bambosan_mbloader_launcherUtils_LibBindings_setLightmapAutofixer(
     mut _env: JNIEnv,
     _thiz: JObject,
     on: jboolean,
@@ -58,7 +58,7 @@ extern "C" fn Java_dev_faizul726_mbloaderjetpack_launcherUtils_libBindings_SetLi
     OPTS.lock().unwrap().handle_lightmaps = on == JNI_TRUE;
 }
 #[no_mangle]
-extern "C" fn Java_dev_faizul726_mbloaderjetpack_launcherUtils_libBindings_SetTextureLodAutofixer(
+extern "C" fn Java_io_bambosan_mbloader_launcherUtils_LibBindings_setTextureLodAutofixer(
     mut _env: JNIEnv,
     _thiz: JObject,
     on: jboolean,
