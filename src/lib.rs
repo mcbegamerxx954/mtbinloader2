@@ -38,6 +38,7 @@ Pattern::from_str("FF C3 02 D1 FD 7B 05 A9 FC 6F 06 A9 FA 67 07 A9 F8 5F 08 A9 F
 const RPMC_PATTERNS: [Pattern<80>; 1] = [Pattern::from_str(
     // V1.21.100
     "F0 B5 03 AF 2D E9 00 ?? ?? B0 ?? 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
+    "F0 B5 03 AF 2D E9 00 0F 8B B0 82 46 DF F8 6C 04 9B 46 91 46 78 44 00 68 00 68 0A 90"//1.21.120.4-v7a
 )];
 #[cfg(target_arch = "x86_64")]
 const RPMC_PATTERNS: [Pattern<80>; 2] = [
