@@ -9,7 +9,7 @@ use std::{
 mod aasset;
 mod jniopts;
 mod plthook;
-use crate::plthook::replace_plt_functions;
+use crate::{aasset::Mbl2Backend, plthook::replace_plt_functions};
 use bhook::hook_fn;
 use bstr::ByteSlice;
 use cpp_string::ResourceLocation;
@@ -18,31 +18,32 @@ use atoi::FromRadix16;
 use core::mem::transmute;
 use cxx::CxxString;
 use libc::c_void;
+use modutils::Module;
 use plt_rs::DynamicLibrary;
 use tinypatscan::Pattern;
 #[cfg(target_arch = "aarch64")]
-const RPMC_PATTERNS: [Pattern<80>; 7] = [
-
-//Arm32: F0 B5 03 AF 2D E9 00 0F 8B B0 82 46 DF F8 ?? ?? 9B 46 91 46 78 44 00 68 00 68 0A 90
-    
-Pattern::from_str("FF 03 03 D1 FA 67 07 A9 F8 5F 08 A9 F6 57 09 A9 F4 4F 0A A9 FD 7B 0B A9 FD C3 02 91 57 D0 3B D5 E8 16 40 F9 F5 03 03 2A F4 03 02 AA F3 03 00 AA A8 83 1B F8 28 10 40 F9"),//1.19.20-1.19.40
-Pattern::from_str("FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"),//1.19.50-1.21.50
-Pattern::from_str("FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4"),//1.21.60-1.21.100
-Pattern::from_str("FF C3 02 D1 FD 7B 06 A9 FD 83 01 91 F9 3B 00 F9 F8 5F 08 A9 F6 57 09 A9 F4 4F 0A A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"),//1.21.110.20
-Pattern::from_str("FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4"),//1.21.111.01-1.21.114.1
-Pattern::from_str("FF 83 02 D1 FD 7B 05 A9 FA 67 06 A9 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 FD 43 01 91 59 D0 3B D5 F6 03 03 2A F5 03 02 AA 28 17 40 F9 F3 03 00 AA A8 83 1F F8 28 10 40 F9"),//1.21.120.20
-Pattern::from_str("FF ?? 02 D1 FD 7B ?? A9 ?? ?? ?? ?? FA 67 ?? A9 F8 5F ?? A9 F6 57 ?? A9 F4 4F ?? A9 FD ?? 01 91 ?? D0 3B D5 ?? 03 03 2A ?? 03 02 AA ?? 17 40 F9 F3 03 00 AA A8 83 1F F8") //1.21.120.23-1.21.130.24
-    
+const RPMC_PATTERNS: [Pattern; 3] = [
+    //1.21.120.4
+    Pattern::from_str("FF ?? 02 D1 FD 7B ?? A9 ?? ?? ?? ?? FA 67 ?? A9 F8 5F ?? A9 F6 57 ?? A9 F4 4F ?? A9 FD ?? 01 91 ?? D0 3B D5 ?? 03 03 2A ?? 03 02 AA ?? 17 40 F9 F3 03 00 AA A8 83 1F F8"),
+    // V1.21.60.21
+    Pattern::from_str("FF 83 02 D1 FD 7B 06 A9 FD 83 01 91 F8 5F 07 A9 F6 57 08 A9 F4 4F 09 A9 58 D0 3B D5 F6 03 03 2A 08 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9 28 01 00 B4"),
+    // V1.19.50-1.21.50
+    Pattern::from_str("FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"),
 ];
 #[cfg(target_arch = "arm")]
-const RPMC_PATTERNS: [Pattern<80>; 3] = [Pattern::from_str(
-    // V1.21.100
-    "F0 B5 03 AF 2D E9 00 ?? ?? B0 ?? 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69"),
-    Pattern::from_str("F0 B5 03 AF 2D E9 00 0F 8B B0 82 46 DF F8 6C 04 9B 46 91 46 78 44 00 68 00 68 0A 90"),//1.21.120.4-v7a
+const RPMC_PATTERNS: [Pattern; 2] = [
+    //1.21.120.4
+    Pattern::from_str(
+        "F0 B5 03 AF 2D E9 00 0F 8B B0 82 46 DF F8 ?? ?? 9B 46 91 46 78 44 00 68 00 68 0A 90",
+    ),
+    // V1.21.110-1.19.50
+    Pattern::from_str(
+        "F0 B5 03 AF 2D E9 00 ?? ?? B0 ?? 46 ?? 48 98 46 92 46 78 44 00 68 00 68 ?? 90 08 69",
+    ),
+];
 
-Pattern::from_str("F0 B5 03 AF 2D E9 00 0F 8B B0 82 46 DF F8 ?? ?? 9B 46 91 46 78 44 00 68 00 68 0A 90")];
 #[cfg(target_arch = "x86_64")]
-const RPMC_PATTERNS: [Pattern<80>; 2] = [
+const RPMC_PATTERNS: [Pattern; 2] = [
     Pattern::from_str("55 41 57 41 56 41 55 41 54 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
     Pattern::from_str("55 41 57 41 56 53 48 83 EC ? 41 89 CF 49 89 D6 48 89 FB 64 48 8B 04 25 28 00 00 00 48 89 44 24 ? 48 8B 7E"),
 ];
@@ -126,16 +127,12 @@ fn parse_range(buf: &[u8]) -> Option<(&[u8], &[u8])> {
     None
 }
 
-fn find_signatures(signatures: &[Pattern<80>], range: SimpleMapRange) -> Option<*const u8> {
+fn find_signatures(signatures: &[Pattern], range: SimpleMapRange) -> Option<*const u8> {
     for sig in signatures {
         let libbytes =
             unsafe { core::slice::from_raw_parts(range.start() as *const u8, range.size()) };
 
-        let addr = if cfg!(target_arch = "arm") {
-            sig.search(libbytes)
-        } else {
-            sig.simd_search(libbytes)
-        };
+        let addr = sig.search(libbytes, tinypatscan::Algorithm::Simd);
         let addr = match addr {
             Some(val) => unsafe { libbytes.as_ptr().byte_add(val) },
             None => {
@@ -150,46 +147,12 @@ fn find_signatures(signatures: &[Pattern<80>], range: SimpleMapRange) -> Option<
     None
 }
 
-macro_rules! cast_array {
-    ($($func_name:literal -> $hook:expr),
-        *,
-    ) => {
-        [
-            $(($func_name, $hook as *const u8)),*,
-        ]
-    }
-}
 /// Set up the asset manager hooks so we control APK file access
 pub fn hook_aaset() {
-    let lib_entry = find_lib("libminecraftpe").expect("Cannot find minecraftpe");
-    let dyn_lib = DynamicLibrary::initialize(lib_entry).expect("Failed to find mc info");
-    // Functions of aasset
-    let asset_fn_list = cast_array! {
-        "AAssetManager_open" -> aasset::open,
-        "AAsset_read" -> aasset::read,
-        "AAsset_close" -> aasset::close,
-        "AAsset_seek" -> aasset::seek,
-        "AAsset_seek64" -> aasset::seek64,
-        "AAsset_getLength" -> aasset::len,
-        "AAsset_getLength64" -> aasset::len64,
-        "AAsset_getRemainingLength" -> aasset::rem,
-        "AAsset_getRemainingLength64" -> aasset::rem64,
-        "AAsset_openFileDescriptor" -> aasset::fd_dummy,
-        "AAsset_openFileDescriptor64" -> aasset::fd_dummy64,
-        "AAsset_getBuffer" -> aasset::get_buffer,
-        "AAsset_isAllocated" -> aasset::is_alloc,
-    };
-    //The actual work
-    replace_plt_functions(&dyn_lib, asset_fn_list);
+    let mut lib = Module::find("minecraftpe");
+    asset_overlay::hook_aaset(&mut lib);
+    asset_overlay::register_provider(Box::new(Mbl2Backend {}));
 }
-/// Find some library's PLT
-fn find_lib<'a>(target_name: &str) -> Option<plt_rs::LoadedLibrary<'a>> {
-    let loaded_modules = plt_rs::collect_modules();
-    loaded_modules
-        .into_iter()
-        .find(|lib| lib.name().contains(target_name))
-}
-// A resource pack manager object
 pub static PACKM_OBJ: AtomicPtr<libc::c_void> = AtomicPtr::new(null_mut());
 // The resource pack manager load function
 pub static RPM_LOAD: OnceLock<RpmLoadFn> = OnceLock::new();
