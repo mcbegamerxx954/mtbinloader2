@@ -65,9 +65,9 @@ fn safe_setup() {
 }
 fn main() {
     log::info!("Starting, mbl2 version v0.1.10-beta");
-    let mcmap = find_minecraft_library_manually()
+    let mcmaps = find_minecraft_library_manually()
         .expect("Cannot find libminecraftpe.so in memory maps - device not supported");
-    let addr = find_signatures(&RPMC_PATTERNS, mcmap).expect("No signature was found");
+    let addr = find_signatures(&RPMC_PATTERNS, &mcmaps).expect("No signature was found");
     log::info!("Hooking ResourcePackManager constructor");
     unsafe {
         rpm_ctor::hook_address(addr as *mut u8);
@@ -94,8 +94,10 @@ impl SimpleMapRange {
     }
 }
 
-fn find_minecraft_library_manually() -> Result<SimpleMapRange, Box<dyn std::error::Error>> {
+fn find_minecraft_library_manually() -> Result<Vec<SimpleMapRange>, Box<dyn std::error::Error>> {
     let contents = fs::read("/proc/self/maps")?;
+    let mut ranges = Vec::new();
+    
     for line in contents.lines() {
         if line.trim_ascii().is_empty() {
             continue;
@@ -106,14 +108,18 @@ fn find_minecraft_library_manually() -> Result<SimpleMapRange, Box<dyn std::erro
         };
         let start = usize::from_radix_16(addr_start).0;
         let end = usize::from_radix_16(addr_end).0;
-        log::info!("Found libminecraftpe.so at: {:x}-{:x}", start, end);
-        return Ok(SimpleMapRange {
+        log::info!("Found libminecraftpe.so region at: {:x}-{:x}", start, end);
+        ranges.push(SimpleMapRange {
             start,
             size: end - start,
         });
     }
 
-    Err("libminecraftpe.so not found in memory maps".into())
+    if ranges.is_empty() {
+        Err("libminecraftpe.so not found in memory maps".into())
+    } else {
+        Ok(ranges)
+    }
 }
 /// Separated into function due to option spam
 fn parse_range(buf: &[u8]) -> Option<(&[u8], &[u8])> {
@@ -127,22 +133,23 @@ fn parse_range(buf: &[u8]) -> Option<(&[u8], &[u8])> {
     None
 }
 
-fn find_signatures(signatures: &[Pattern], range: SimpleMapRange) -> Option<*const u8> {
+fn find_signatures(signatures: &[Pattern], ranges: &[SimpleMapRange]) -> Option<*const u8> {
     for sig in signatures {
-        let libbytes =
-            unsafe { core::slice::from_raw_parts(range.start() as *const u8, range.size()) };
+        for range in ranges {
+            let libbytes =
+                unsafe { core::slice::from_raw_parts(range.start() as *const u8, range.size()) };
 
-        let addr = sig.search(libbytes, tinypatscan::Algorithm::Simd);
-        let addr = match addr {
-            Some(val) => unsafe { libbytes.as_ptr().byte_add(val) },
-            None => {
-                log::error!("Cannot find signature");
-                continue;
+            let addr = sig.search(libbytes, tinypatscan::Algorithm::Simd);
+            if let Some(val) = addr {
+                let addr = unsafe { libbytes.as_ptr().byte_add(val) };
+                #[cfg(target_arch = "arm")]
+                let addr = unsafe { addr.offset(1) };
+                log::info!("Found signature in region {:x}-{:x} at offset {:x}", 
+                    range.start(), range.start() + range.size(), val);
+                return Some(addr as *const u8);
             }
-        };
-        #[cfg(target_arch = "arm")]
-        let addr = unsafe { addr.offset(1) };
-        return Some(addr as *const u8);
+        }
+        log::error!("Cannot find signature in any region");
     }
     None
 }
