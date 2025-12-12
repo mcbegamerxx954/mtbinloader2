@@ -9,7 +9,7 @@ use std::{
 mod aasset;
 mod jniopts;
 mod plthook;
-use crate::{aasset::Mbl2Backend, plthook::replace_plt_functions};
+use crate::plthook::replace_plt_functions;
 use bhook::hook_fn;
 use bstr::ByteSlice;
 use cpp_string::ResourceLocation;
@@ -18,9 +18,9 @@ use atoi::FromRadix16;
 use core::mem::transmute;
 use cxx::CxxString;
 use libc::c_void;
-use modutils::Module;
 use plt_rs::DynamicLibrary;
 use tinypatscan::Pattern;
+
 #[cfg(target_arch = "aarch64")]
 const RPMC_PATTERNS: [Pattern; 3] = [
     //1.21.120.4
@@ -64,7 +64,7 @@ fn safe_setup() {
     main();
 }
 fn main() {
-    log::info!("Starting, mbl2 version v0.1.10-beta");
+    log::info!("Starting, mbl2 version v0.1.12");
     let mcmaps = find_minecraft_library_manually()
         .expect("Cannot find libminecraftpe.so in memory maps - device not supported");
     let addr = find_signatures(&RPMC_PATTERNS, &mcmaps).expect("No signature was found");
@@ -97,7 +97,7 @@ impl SimpleMapRange {
 fn find_minecraft_library_manually() -> Result<Vec<SimpleMapRange>, Box<dyn std::error::Error>> {
     let contents = fs::read("/proc/self/maps")?;
     let mut ranges = Vec::new();
-    
+
     for line in contents.lines() {
         if line.trim_ascii().is_empty() {
             continue;
@@ -138,14 +138,17 @@ fn find_signatures(signatures: &[Pattern], ranges: &[SimpleMapRange]) -> Option<
         for range in ranges {
             let libbytes =
                 unsafe { core::slice::from_raw_parts(range.start() as *const u8, range.size()) };
-
             let addr = sig.search(libbytes, tinypatscan::Algorithm::Simd);
             if let Some(val) = addr {
                 let addr = unsafe { libbytes.as_ptr().byte_add(val) };
                 #[cfg(target_arch = "arm")]
                 let addr = unsafe { addr.offset(1) };
-                log::info!("Found signature in region {:x}-{:x} at offset {:x}", 
-                    range.start(), range.start() + range.size(), val);
+                log::info!(
+                    "Found signature in region {:x}-{:x} at offset {:x}",
+                    range.start(),
+                    range.start() + range.size(),
+                    val
+                );
                 return Some(addr as *const u8);
             }
         }
@@ -154,12 +157,46 @@ fn find_signatures(signatures: &[Pattern], ranges: &[SimpleMapRange]) -> Option<
     None
 }
 
+macro_rules! cast_array {
+    ($($func_name:literal -> $hook:expr),
+        *,
+    ) => {
+        [
+            $(($func_name, $hook as *const u8)),*,
+        ]
+    }
+}
 /// Set up the asset manager hooks so we control APK file access
 pub fn hook_aaset() {
-    let mut lib = Module::find("minecraftpe");
-    asset_overlay::hook_aaset(&mut lib);
-    asset_overlay::register_provider(Box::new(Mbl2Backend {}));
+    let lib_entry = find_lib("libminecraftpe").expect("Cannot find minecraftpe");
+    let dyn_lib = DynamicLibrary::initialize(lib_entry).expect("Failed to find mc info");
+    // Functions of aasset
+    let asset_fn_list = cast_array! {
+        "AAssetManager_open" -> aasset::open,
+        "AAsset_read" -> aasset::read,
+        "AAsset_close" -> aasset::close,
+        "AAsset_seek" -> aasset::seek,
+        "AAsset_seek64" -> aasset::seek64,
+        "AAsset_getLength" -> aasset::len,
+        "AAsset_getLength64" -> aasset::len64,
+        "AAsset_getRemainingLength" -> aasset::rem,
+        "AAsset_getRemainingLength64" -> aasset::rem64,
+        "AAsset_openFileDescriptor" -> aasset::fd_dummy,
+        "AAsset_openFileDescriptor64" -> aasset::fd_dummy64,
+        "AAsset_getBuffer" -> aasset::get_buffer,
+        "AAsset_isAllocated" -> aasset::is_alloc,
+    };
+    //The actual work
+    replace_plt_functions(&dyn_lib, asset_fn_list);
 }
+/// Find some library's PLT
+fn find_lib<'a>(target_name: &str) -> Option<plt_rs::LoadedLibrary<'a>> {
+    let loaded_modules = plt_rs::collect_modules();
+    loaded_modules
+        .into_iter()
+        .find(|lib| lib.name().contains(target_name))
+}
+// A resource pack manager object
 pub static PACKM_OBJ: AtomicPtr<libc::c_void> = AtomicPtr::new(null_mut());
 // The resource pack manager load function
 pub static RPM_LOAD: OnceLock<RpmLoadFn> = OnceLock::new();
