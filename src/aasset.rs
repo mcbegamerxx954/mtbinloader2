@@ -195,7 +195,7 @@ fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
     //     let replace_with = b"
     // #define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
     // void main";
-    let replace_with = b"````
+    let replace_with = b"
    #define a_texcoord1 vec2(uvec2(uvec2(round(a_texcoord1 * 65535.0)).y >> 4u, uvec2(round(a_texcoord1 * 65535.0)).y) & uvec2(15u,15u)) * vec2_splat(0.066666670143604278564453125);";
     for (_, pass) in &mut materialbin.passes {
         for variants in &mut pass.variants {
