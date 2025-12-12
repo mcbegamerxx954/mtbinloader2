@@ -165,10 +165,10 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
             && version <= MinecraftVersion::V1_19_60
             && opts.handle_texturelods;
         // Prevent some work
-        if version == mcver && !needs_lightmap_fix && !needs_sampler_fix {
-            log::info!("Did not fix mtbin, mtversion: {version}");
-            return None;
-        }
+        // if version == mcver && !needs_lightmap_fix && !needs_sampler_fix {
+        //     log::info!("Did not fix mtbin, mtversion: {version}");
+        //     return None;
+        // }
         if needs_lightmap_fix {
             handle_lightmaps(&mut material);
             log::warn!("Had to fix lightmaps for RenderChunk");
