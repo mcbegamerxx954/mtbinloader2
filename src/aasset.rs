@@ -157,7 +157,7 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
             }
         };
         let needs_lightmap_fix = IS_1_21_100.load(Ordering::Acquire)
-            && version != MinecraftVersion::V1_21_110
+            // && version != MinecraftVersion::V1_21_110
             && (material.name == "RenderChunk" || material.name == "RenderChunkPrepass")
             && opts.handle_lightmaps;
         let needs_sampler_fix = material.name == "RenderChunk"
