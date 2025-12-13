@@ -211,7 +211,7 @@ float(uint(round(a_texcoord1.y * 65535.0)) & 15u) \
                     let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
                         continue;
                     };
-                    if finder1.find(&bgfx.code).is_some() && finder3.find(&bgfx.code).is_some() {
+                    if finder1.find(&bgfx.code).is_some() || finder3.find(&bgfx.code).is_some() {
                         continue;
                     }
                     // if finder3.find(&bgfx.code).is_some()
