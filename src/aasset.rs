@@ -21,12 +21,14 @@ use scroll::Pread;
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
+    error::Error,
     ffi::{CStr, OsStr},
     io::{self, Cursor, Read, Seek, Write},
     ops::{Deref, DerefMut},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     pin::Pin,
+    ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
         LazyLock, Mutex, OnceLock,
@@ -275,21 +277,21 @@ void main";
         let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
             continue;
         };
-
+        let mc_1_21_130 = MC_IS_1_21_130.load(Ordering::Acquire);
         // shader is 1-21-100 or above
         if finder1.find(&bgfx.code).is_none() && finder2.find(&bgfx.code).is_none() {
             if version >= MinecraftVersion::V1_21_110 && finder4.find(&bgfx.code).is_some() {
                 //shader is already 1-21-130
                 log::info!("finder already 1_21_130!!! Skipping replacement...");
                 continue;
-            } else if MC_IS_1_21_130.load(Ordering::Acquire) {
+            } else if mc_1_21_130 {
                 log::info!("autofix: 11020 -> 13028");
                 replace_with = lightmap_11020_13028;
             } else {
                 log::info!("finder already 1_21_110!!! Skipping replacement...");
                 continue;
             }
-        } else if MC_IS_1_21_130.load(Ordering::Acquire) {
+        } else if mc_1_21_130 {
             log::info!("autofix: 10023 -> 13028");
             replace_with = lightmap_10023_13028;
         } else {
@@ -299,8 +301,6 @@ void main";
         *changed += 1;
         //log::info!("autofix is doing lightmap replacing...");
         replace_bytes(&mut bgfx.code, &finder, pattern, replace_with);
-        // code.bgfx_shader_data.clear();
-        // bgfx.write(&mut code.bgfx_shader_data).unwrap();
         blob.clear();
         let _unused = bgfx.write(blob);
     }
@@ -344,10 +344,7 @@ void main ()";
 fn replace_bytes(codebuf: &mut Vec<u8>, finder: &Finder, pattern: &[u8], replace_with: &[u8]) {
     let sus = match finder.find(codebuf) {
         Some(yay) => yay,
-        None => {
-            println!("oops");
-            return;
-        }
+        None => return,
     };
     codebuf.splice(sus..sus + pattern.len(), replace_with.iter().cloned());
 }
@@ -378,10 +375,7 @@ pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size
     let rs_buffer = core::slice::from_raw_parts_mut(buf as *mut u8, count);
     let read_total = match (*file).read(rs_buffer) {
         Ok(n) => n,
-        Err(e) => {
-            log::warn!("failed fake aaset read: {e}");
-            return -1 as c_int;
-        }
+        Err(e) => return e.to_c_result(),
     };
     handle_result!(read_total.try_into())
 }
@@ -484,10 +478,7 @@ fn seek_facade(offset: i64, whence: c_int, file: &mut Buffer) -> i64 {
             //Let's check this so we don't mess up
             let u64_off = match u64::try_from(offset) {
                 Ok(uoff) => uoff,
-                Err(e) => {
-                    log::error!("signed ({offset}) to unsigned failed: {e}");
-                    return -1;
-                }
+                Err(e) => return e.to_c_result(),
             };
             io::SeekFrom::Start(u64_off)
         }
@@ -501,15 +492,9 @@ fn seek_facade(offset: i64, whence: c_int, file: &mut Buffer) -> i64 {
     match file.seek(offset) {
         Ok(new_offset) => match new_offset.try_into() {
             Ok(int) => int,
-            Err(err) => {
-                log::error!("u64 ({new_offset}) to i64 failed: {err}");
-                -1
-            }
+            Err(err) => err.to_c_result(),
         },
-        Err(err) => {
-            log::error!("aasset seek failed: {err}");
-            -1
-        }
+        Err(err) => err.to_c_result(),
     }
 }
 
@@ -630,5 +615,35 @@ impl Deref for Buffer {
 impl DerefMut for Buffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.object
+    }
+}
+trait AsCResult<T> {
+    fn to_c_result(&self) -> T;
+}
+impl<P, T: Error> AsCResult<*mut P> for T {
+    fn to_c_result(&self) -> *mut P {
+        log::error!("Error: {self}");
+        ptr::null_mut()
+    }
+}
+
+impl<P, T: Error> AsCResult<*const P> for T {
+    fn to_c_result(&self) -> *const P {
+        log::error!("Error: {self}");
+        ptr::null_mut()
+    }
+}
+
+impl<T: Error> AsCResult<c_int> for T {
+    fn to_c_result(&self) -> c_int {
+        log::error!("Error: {self}");
+        -1
+    }
+}
+
+impl<T: Error> AsCResult<off_t> for T {
+    fn to_c_result(&self) -> off_t {
+        log::error!("Error: {self}");
+        -1
     }
 }
