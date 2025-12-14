@@ -123,51 +123,12 @@ fn handle_lightmaps(
 ) {
     //log::info!("mtbinloader25 handle_lightmaps");
     let pattern = b"void main";
-    //     let replace_with = b"
-    // #define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
-    // void main";
-    let mut replace_with: &[u8] = b"void main";
-    let lightmap_10023_11020: &[u8] = b"
-vec2 lightmapUtil_10023_11020_ead63a(vec2 tc1){
-    return clamp(vec2(uvec2(
-        uint(floor(tc1.x * 255.0)) & 15u,
-        uint(floor(tc1.x * 255.0)) >> 4u
-    ) & 15u) * 0.0625, 0.0, 1.0);
-}
-#ifdef a_texcoord1
- #undef a_texcoord1
-#endif
-#define a_texcoord1 lightmapUtil_10023_11020_ead63a(a_texcoord1)
-void main";
-    let lightmap_10023_13028: &[u8] = b"
-vec2 lightmapUtil_10023_13028_190d99(vec2 tc1){
-    return clamp(vec2(uvec2(
-        uint(round(tc1.y * 65535.0)) >> 4u,
-        uint(round(tc1.y * 65535.0)) & 15u
-    ) & 15u) * 0.066666, 0.0, 1.0);
-}
-#ifdef a_texcoord1
- #undef a_texcoord1
-#endif
-#define a_texcoord1 lightmapUtil_10023_13028_190d99(a_texcoord1)
-void main";
-    let lightmap_11020_13028: &[u8] = b"
-vec2 lightmapUtil_11020_13028_274db2(vec2 tc1){
-    uvec2 uv = uvec2(
-        uint(round(tc1.y * 65535.0)) >> 4u,
-        uint(round(tc1.y * 65535.0)) & 15u
-    ) & 15u;
-    return vec2(float((uv.y << 4u) | uv.x) / 255.0, 0.0);
-}
-#ifdef a_texcoord1
- #undef a_texcoord1
-#endif
-#define a_texcoord1 lightmapUtil_11020_13028_274db2(a_texcoord1)
-void main";
+    let lightmap_10023_11020: &[u8] = include_bytes!("../assets/lightmapUtil_10023_11020.glsl");
+    let lightmap_10023_13028: &[u8] = include_bytes!("../assets/lightmapUtil_10023_13028.glsl");
+    let lightmap_11020_13028: &[u8] = include_bytes!("../assets/lightmapUtil_11020_13028.glsl");
     let finder = Finder::new(pattern);
     let finder1 = Finder::new(b"v_lightmapUV = a_texcoord1;");
     let finder2 = Finder::new(b"v_lightmapUV=a_texcoord1;");
-    //let finder3 = Finder::new(b"#define a_texcoord1 ");
     let finder4 = Finder::new(b"65535.0");
     for (_, code) in materialbin
         .passes
@@ -192,6 +153,7 @@ void main";
         };
         let mc_1_21_130 = MC_IS_1_21_130.load(Ordering::Acquire);
         // shader is 1-21-100 or above
+        let replace_with: &[u8];
         if finder1.find(&bgfx.code).is_none() && finder2.find(&bgfx.code).is_none() {
             if version >= MinecraftVersion::V1_21_110 && finder4.find(&bgfx.code).is_some() {
                 //shader is already 1-21-130
@@ -213,7 +175,7 @@ void main";
         }
         *changed += 1;
         //log::info!("autofix is doing lightmap replacing...");
-        replace_bytes(&mut bgfx.code, &finder, pattern, replace_with);
+        add_bytes_before(&mut bgfx.code, &finder, replace_with);
         blob.clear();
         let _unused = bgfx.write(blob);
     }
@@ -229,8 +191,7 @@ fn handle_samplers(materialbin: &mut CompiledMaterialDefinition) {
  #define texture(tex,uv) textureLod(tex,uv,0.0)
 #else
  #define texture2D(tex,uv) texture2DLod(tex,uv,0.0)
-#endif
-void main ()";
+#endif";
     let finder = Finder::new(pattern);
     for (_, code) in materialbin
         .passes
@@ -247,17 +208,18 @@ void main ()";
             .bgfx_shader_data
             .pread(0)
             .expect("Failed reading bgfx shader data");
-        replace_bytes(&mut bgfx.code, &finder, pattern, replace_with);
+        add_bytes_before(&mut bgfx.code, &finder, replace_with);
         code.bgfx_shader_data.clear();
         bgfx.write(&mut code.bgfx_shader_data)
             .expect("bgfx shader Write error... huh");
     }
 }
 
-fn replace_bytes(codebuf: &mut Vec<u8>, finder: &Finder, pattern: &[u8], replace_with: &[u8]) {
-    let sus = match finder.find(codebuf) {
+fn add_bytes_before(codebuf: &mut Vec<u8>, finder: &Finder, replace_with: &[u8]) {
+    let position = match finder.find(codebuf) {
         Some(yay) => yay,
         None => return,
     };
-    codebuf.splice(sus..sus + pattern.len(), replace_with.iter().cloned());
+    let previous = position;
+    codebuf.splice(previous..previous, replace_with.iter().cloned());
 }
