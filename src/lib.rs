@@ -1,10 +1,10 @@
-//#[deny(indexing_slicing)]
+#[deny(clippy::indexing_slicing)]
 mod cpp_string;
 use std::{
     fs,
     pin::Pin,
     ptr::null_mut,
-    sync::{atomic::AtomicPtr, OnceLock},
+    sync::{atomic::AtomicPtr, LockResult, OnceLock},
 };
 mod aasset;
 mod jniopts;
@@ -97,7 +97,6 @@ impl SimpleMapRange {
 fn find_minecraft_library_manually() -> Result<Vec<SimpleMapRange>, Box<dyn std::error::Error>> {
     let contents = fs::read("/proc/self/maps")?;
     let mut ranges = Vec::new();
-
     for line in contents.lines() {
         if line.trim_ascii().is_empty() {
             continue;
@@ -149,7 +148,7 @@ fn find_signatures(signatures: &[Pattern], ranges: &[SimpleMapRange]) -> Option<
                     range.start() + range.size(),
                     val
                 );
-                return Some(addr as *const u8);
+                return Some(addr);
             }
         }
         log::error!("Cannot find signature in any region");
@@ -221,4 +220,16 @@ type RpmLoadFn = unsafe extern "C" fn(*mut c_void, ResourceLocation, Pin<&mut Cx
 unsafe fn get_load(packm_ptr: *mut c_void) -> RpmLoadFn {
     let vptr = *transmute::<*mut c_void, *mut *mut *const u8>(packm_ptr);
     transmute::<*const u8, RpmLoadFn>(*vptr.offset(2))
+}
+
+pub trait LockResultExt {
+    type Guard;
+    fn ignore_poison(self) -> Self::Guard;
+}
+
+impl<Guard> LockResultExt for LockResult<Guard> {
+    type Guard = Guard;
+    fn ignore_poison(self) -> Guard {
+        self.unwrap_or_else(|e| e.into_inner())
+    }
 }

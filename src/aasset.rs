@@ -4,12 +4,13 @@
 use crate::{
     cpp_string::{ResourceLocation, StackString},
     jniopts::OPTS,
+    LockResultExt,
 };
 use cxx::CxxString;
 use libc::{c_char, c_int, c_void, off64_t, off_t, size_t};
 use materialbin::{
     bgfx_shader::BgfxShader,
-    pass::{ShaderStage, ShaderCodePlatform},
+    pass::{ShaderCodePlatform, ShaderStage},
     CompiledMaterialDefinition, MinecraftVersion,
 };
 use memchr::memmem::Finder;
@@ -20,12 +21,14 @@ use scroll::Pread;
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
+    error::Error,
     ffi::{CStr, OsStr},
     io::{self, Cursor, Read, Seek, Write},
     ops::{Deref, DerefMut},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     pin::Pin,
+    ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
         LazyLock, Mutex, OnceLock,
@@ -67,7 +70,7 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
             if memchr::memmem::find(&buf, b"v_dithering").is_some() {
                 MC_IS_1_21_100.store(true, Ordering::Release);
                 log::info!("Mc version is 1_21_100 or higher");
-            } // else { panic!("mc version unsupported! cannot find:v_dithering"); }; 
+            } // else { panic!("mc version unsupported! cannot find:v_dithering"); };
             if memchr::memmem::find(&buf, b"a_texcoord1 * 65535.0").is_some() {
                 MC_IS_1_21_130.store(true, Ordering::Release);
                 log::info!("Mc version is 1_21_130 or higher");
@@ -118,11 +121,11 @@ pub unsafe extern "C" fn open(
     let raw_cstr = c_str.to_bytes();
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
-    let mut sus = MC_FILELOADER.lock().unwrap();
+    let mut sus = MC_FILELOADER.lock().ignore_poison();
     if let Some(yay) = sus.get_file(c_path, manager) {
         WANTED_ASSETS.get_mut().insert(AAssetPtr(aasset), yay);
     }
-    return aasset;
+    aasset
 }
 macro_rules! handle_result {
     ($expr:expr) => {
@@ -153,7 +156,7 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
     let mcver = MC_VERSION.get_or_init(|| get_current_mcver(man));
     // Just ignore if no Minecraft version was found
     let mcver = (*mcver)?;
-    let opts = OPTS.lock().unwrap();
+    let opts = OPTS.lock().ignore_poison();
     for version in opts.autofixer_versions.iter() {
         let version = *version;
         let mut material: CompiledMaterialDefinition = match data.pread_with(0, version) {
@@ -200,12 +203,16 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
 
     None
 }
-fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition, version: MinecraftVersion, changed: &mut i32) {
+fn handle_lightmaps(
+    materialbin: &mut CompiledMaterialDefinition,
+    version: MinecraftVersion,
+    changed: &mut i32,
+) {
     //log::info!("mtbinloader25 handle_lightmaps");
     let pattern = b"void main";
-//     let replace_with = b"
-// #define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
-// void main";
+    //     let replace_with = b"
+    // #define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
+    // void main";
     let mut replace_with: &[u8] = b"void main";
     let lightmap_10023_11020: &[u8] = b"
 vec2 lightmapUtil_10023_11020_ead63a(vec2 tc1){
@@ -249,60 +256,54 @@ void main";
     let finder2 = Finder::new(b"v_lightmapUV=a_texcoord1;");
     //let finder3 = Finder::new(b"#define a_texcoord1 ");
     let finder4 = Finder::new(b"65535.0");
-    for (_, code) in materialbin.passes.iter_mut()
+    for (_, code) in materialbin
+        .passes
+        .iter_mut()
         .flat_map(|(_, pass)| &mut pass.variants)
         .flat_map(|variants| &mut variants.shader_codes)
-        .filter(|(stage, _)| stage.stage == ShaderStage::Vertex
-            && (stage.platform == ShaderCodePlatform::Essl100
-            || stage.platform == ShaderCodePlatform::Essl300))
+        .filter(|(stage, _)| {
+            stage.stage == ShaderStage::Vertex
+                && (stage.platform == ShaderCodePlatform::Essl100
+                    || stage.platform == ShaderCodePlatform::Essl300)
+        })
     {
-        // if version == MinecraftVersion::V1_21_20 
-        // if stage.platform == ShaderCodePlatform::Essl100 
+        // if version == MinecraftVersion::V1_21_20
+        // if stage.platform == ShaderCodePlatform::Essl100
         // if stage.platform_name != "ESSL_310" && (
-        // if version != MinecraftVersion::V1_21_110 
+        // if version != MinecraftVersion::V1_21_110
         // log::warn!("Skipping replacement due to not existing lightmap UV assignment");
         // let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
         let blob = &mut code.bgfx_shader_data;
         let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
             continue;
         };
-        if ( // shader is 1-21-100 or above
-            finder1.find(&bgfx.code).is_none() &&
-            finder2.find(&bgfx.code).is_none()
-        ) { 
-            if version >= MinecraftVersion::V1_21_110 &&
-                finder4.find(&bgfx.code).is_some()
-            { //shader is already 1-21-130
-                log::info!("finder already 1_21_130!!! Skipping replacement...");   
+        let mc_1_21_130 = MC_IS_1_21_130.load(Ordering::Acquire);
+        // shader is 1-21-100 or above
+        if finder1.find(&bgfx.code).is_none() && finder2.find(&bgfx.code).is_none() {
+            if version >= MinecraftVersion::V1_21_110 && finder4.find(&bgfx.code).is_some() {
+                //shader is already 1-21-130
+                log::info!("finder already 1_21_130!!! Skipping replacement...");
                 continue;
+            } else if mc_1_21_130 {
+                log::info!("autofix: 11020 -> 13028");
+                replace_with = lightmap_11020_13028;
             } else {
-                if MC_IS_1_21_130.load(Ordering::Acquire)
-                {
-                    log::info!("autofix: 11020 -> 13028");
-                    replace_with = lightmap_11020_13028;
-                } else {
-                    log::info!("finder already 1_21_110!!! Skipping replacement...");   
-                    continue;
-                }
+                log::info!("finder already 1_21_110!!! Skipping replacement...");
+                continue;
             }
+        } else if mc_1_21_130 {
+            log::info!("autofix: 10023 -> 13028");
+            replace_with = lightmap_10023_13028;
         } else {
-            if MC_IS_1_21_130.load(Ordering::Acquire)
-            {
-                log::info!("autofix: 10023 -> 13028");
-                replace_with = lightmap_10023_13028;
-            } else {
-                log::info!("autofix: 10023 -> 11020");
-                replace_with = lightmap_10023_11020;
-            }
+            log::info!("autofix: 10023 -> 11020");
+            replace_with = lightmap_10023_11020;
         }
         *changed += 1;
         //log::info!("autofix is doing lightmap replacing...");
         replace_bytes(&mut bgfx.code, &finder, pattern, replace_with);
-        // code.bgfx_shader_data.clear();
-        // bgfx.write(&mut code.bgfx_shader_data).unwrap();
         blob.clear();
         let _unused = bgfx.write(blob);
-    };
+    }
 }
 // fn cmp_ign_whitespace(str1: &str, str2: &str) -> bool {
 //     str1.chars().filter(|c| !c.is_whitespace()).eq(str2.chars())
@@ -318,28 +319,32 @@ fn handle_samplers(materialbin: &mut CompiledMaterialDefinition) {
 #endif
 void main ()";
     let finder = Finder::new(pattern);
-    for (_, code) in materialbin.passes.iter_mut()
+    for (_, code) in materialbin
+        .passes
+        .iter_mut()
         .filter(|(passes, _)| *passes == "AlphaTest" || *passes == "Opaque")
         .flat_map(|(_, pass)| &mut pass.variants)
         .flat_map(|variants| &mut variants.shader_codes)
-        .filter(|(stage, _)| stage.stage == ShaderStage::Fragment
-            && stage.platform_name == "ESSL_100")
+        .filter(|(stage, _)| {
+            stage.stage == ShaderStage::Fragment && stage.platform_name == "ESSL_100"
+        })
     {
         log::info!("handling texture sampler to disable mipmap...");
-        let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
+        let mut bgfx: BgfxShader = code
+            .bgfx_shader_data
+            .pread(0)
+            .expect("Failed reading bgfx shader data");
         replace_bytes(&mut bgfx.code, &finder, pattern, replace_with);
         code.bgfx_shader_data.clear();
-        bgfx.write(&mut code.bgfx_shader_data).unwrap();
-    };
+        bgfx.write(&mut code.bgfx_shader_data)
+            .expect("bgfx shader Write error... huh");
+    }
 }
 
 fn replace_bytes(codebuf: &mut Vec<u8>, finder: &Finder, pattern: &[u8], replace_with: &[u8]) {
     let sus = match finder.find(codebuf) {
         Some(yay) => yay,
-        None => {
-            println!("oops");
-            return;
-        }
+        None => return,
     };
     codebuf.splice(sus..sus + pattern.len(), replace_with.iter().cloned());
 }
@@ -370,10 +375,7 @@ pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size
     let rs_buffer = core::slice::from_raw_parts_mut(buf as *mut u8, count);
     let read_total = match (*file).read(rs_buffer) {
         Ok(n) => n,
-        Err(e) => {
-            log::warn!("failed fake aaset read: {e}");
-            return -1 as c_int;
-        }
+        Err(e) => return e.to_c_result(),
     };
     handle_result!(read_total.try_into())
 }
@@ -417,7 +419,7 @@ pub unsafe extern "C" fn rem64(aasset: *mut AAsset) -> off64_t {
 pub unsafe extern "C" fn close(aasset: *mut AAsset) {
     let wanted_assets = WANTED_ASSETS.get_mut();
     if let Some(buffer) = wanted_assets.remove(&AAssetPtr(aasset)) {
-        MC_FILELOADER.lock().unwrap().last_buffer = Some(buffer);
+        MC_FILELOADER.lock().ignore_poison().last_buffer = Some(buffer);
     }
     ndk_sys::AAsset_close(aasset);
 }
@@ -476,10 +478,7 @@ fn seek_facade(offset: i64, whence: c_int, file: &mut Buffer) -> i64 {
             //Let's check this so we don't mess up
             let u64_off = match u64::try_from(offset) {
                 Ok(uoff) => uoff,
-                Err(e) => {
-                    log::error!("signed ({offset}) to unsigned failed: {e}");
-                    return -1;
-                }
+                Err(e) => return e.to_c_result(),
             };
             io::SeekFrom::Start(u64_off)
         }
@@ -493,15 +492,9 @@ fn seek_facade(offset: i64, whence: c_int, file: &mut Buffer) -> i64 {
     match file.seek(offset) {
         Ok(new_offset) => match new_offset.try_into() {
             Ok(int) => int,
-            Err(err) => {
-                log::error!("u64 ({new_offset}) to i64 failed: {err}");
-                -1
-            }
+            Err(err) => err.to_c_result(),
         },
-        Err(err) => {
-            log::error!("aasset seek failed: {err}");
-            -1
-        }
+        Err(err) => err.to_c_result(),
     }
 }
 
@@ -548,7 +541,9 @@ impl FileLoader {
         let stripped = path.strip_prefix("assets/").unwrap_or(path);
         if let Some(mut cache) = self.last_buffer.take_if(|c| c.name == path) {
             log::info!("Cache hit!: {:#?}", path);
-            cache.rewind().unwrap();
+            cache
+                .rewind()
+                .expect("Unable to rewind in a memory buffer?, impossible");
             return Some(cache);
         }
         let replacement_list = folder_list! {
@@ -620,5 +615,35 @@ impl Deref for Buffer {
 impl DerefMut for Buffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.object
+    }
+}
+trait AsCResult<T> {
+    fn to_c_result(&self) -> T;
+}
+impl<P, T: Error> AsCResult<*mut P> for T {
+    fn to_c_result(&self) -> *mut P {
+        log::error!("Error: {self}");
+        ptr::null_mut()
+    }
+}
+
+impl<P, T: Error> AsCResult<*const P> for T {
+    fn to_c_result(&self) -> *const P {
+        log::error!("Error: {self}");
+        ptr::null_mut()
+    }
+}
+
+impl<T: Error> AsCResult<c_int> for T {
+    fn to_c_result(&self) -> c_int {
+        log::error!("Error: {self}");
+        -1
+    }
+}
+
+impl<T: Error> AsCResult<off_t> for T {
+    fn to_c_result(&self) -> off_t {
+        log::error!("Error: {self}");
+        -1
     }
 }
