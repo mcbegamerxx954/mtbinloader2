@@ -8,7 +8,9 @@ use crate::{
 use cxx::CxxString;
 use libc::{c_char, c_int, c_void, off64_t, off_t, size_t};
 use materialbin::{
-    bgfx_shader::BgfxShader, pass::ShaderStage, CompiledMaterialDefinition, MinecraftVersion,
+    bgfx_shader::BgfxShader,
+    pass::{ShaderStage, ShaderCodePlatform},
+    CompiledMaterialDefinition, MinecraftVersion,
 };
 use memchr::memmem::Finder;
 use ndk::asset::{Asset, AssetManager};
@@ -39,7 +41,8 @@ unsafe impl Send for AAssetPtr {}
 
 // The Minecraft version we will use to port shaders to
 static MC_VERSION: OnceLock<Option<MinecraftVersion>> = OnceLock::new();
-static IS_1_21_100: AtomicBool = AtomicBool::new(false);
+static MC_IS_1_21_100: AtomicBool = AtomicBool::new(false);
+static MC_IS_1_21_130: AtomicBool = AtomicBool::new(false);
 // The assets we have registered to replace data about
 static mut WANTED_ASSETS: Lazy<UnsafeCell<HashMap<AAssetPtr, Buffer>>> =
     Lazy::new(|| UnsafeCell::new(HashMap::new()));
@@ -62,9 +65,13 @@ fn get_current_mcver(man: ndk::asset::AssetManager) -> Option<MinecraftVersion> 
         if let Ok(_shader) = buf.pread_with::<CompiledMaterialDefinition>(0, version) {
             log::info!("Mc version is {version}");
             if memchr::memmem::find(&buf, b"v_dithering").is_some() {
-                log::warn!("mc is 1.21.100 and higher");
-                IS_1_21_100.store(true, Ordering::Release);
-            }
+                MC_IS_1_21_100.store(true, Ordering::Release);
+                log::info!("Mc version is 1_21_100 or higher");
+            } // else { panic!("mc version unsupported! cannot find:v_dithering"); }; 
+            if memchr::memmem::find(&buf, b"a_texcoord1 * 65535.0").is_some() {
+                MC_IS_1_21_130.store(true, Ordering::Release);
+                log::info!("Mc version is 1_21_130 or higher");
+            } // else { panic!("mc version unsupported! cannot find:a_texcoord1*65535.0"); };
             return Some(version);
         };
     }
@@ -156,7 +163,7 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
                 continue;
             }
         };
-        let needs_lightmap_fix = IS_1_21_100.load(Ordering::Acquire)
+        let needs_lightmap_fix = MC_IS_1_21_100.load(Ordering::Acquire)
             // && version != MinecraftVersion::V1_21_110
             && (material.name == "RenderChunk" || material.name == "RenderChunkPrepass")
             && opts.handle_lightmaps;
@@ -165,15 +172,22 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
             && version <= MinecraftVersion::V1_19_60
             && opts.handle_texturelods;
         // Prevent some work
-        // if version == mcver && !needs_lightmap_fix && !needs_sampler_fix {
-        //     log::info!("Did not fix mtbin, mtversion: {version}");
-        //     return None;
-        // }
+        if version == mcver && !needs_lightmap_fix && !needs_sampler_fix {
+            log::info!("Did not fix mtbin, mtversion: {version}");
+            return None;
+        }
+        let mut changed = 0;
         if needs_lightmap_fix {
-            handle_lightmaps(&mut material);
             log::warn!("Had to fix lightmaps for RenderChunk");
+            handle_lightmaps(&mut material, version, &mut changed);
+            log::warn!("autofix have changed {changed} passes");
+            if changed == 0 {
+                log::info!("nothing changed, skip writting");
+                return None; //shader is already 1.21.100+
+            }
         }
         if needs_sampler_fix {
+            log::warn!("Had to fix mipmap levels for RenderChunk");
             handle_samplers(&mut material);
         }
         let mut output = Vec::with_capacity(data.len());
@@ -186,55 +200,117 @@ fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
 
     None
 }
-fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition) {
-    let finder = Finder::new(b"void main");
-    // very bad code please help
-    // let finder1 = Finder::new(b"v_lightmapUV = a_texcoord1;");
-    // let finder2 = Finder::new(b"v_lightmapUV=a_texcoord1;");
-    let finder1 = Finder::new("0.066666670143604278564453125");
-    //    let finder2 = Finder::new("1.0/15.0");
-    let finder3 = Finder::new(b"#define a_texcoord1 ");
-    //     let replace_with = b"
-    // #define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
-    // void main";
-    let replace_with = b"
-#define a_texcoord1 clamp(vec2( \
-float(uint(round(a_texcoord1.y * 65535.0)) >> 4u), \
-float(uint(round(a_texcoord1.y * 65535.0)) & 15u) \
-)* 0.066666, 0.0, 1.0)
-    void main";
-    for (_, pass) in &mut materialbin.passes {
-        for variants in &mut pass.variants {
-            for (stage, code) in &mut variants.shader_codes {
-                if stage.stage == ShaderStage::Vertex {
-                    let blob = &mut code.bgfx_shader_data;
-                    let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
-                        continue;
-                    };
-                    if finder1.find(&bgfx.code).is_some() || finder3.find(&bgfx.code).is_some() {
-                        continue;
-                    }
-                    // if finder3.find(&bgfx.code).is_some()
-                    //     || (finder1.find(&bgfx.code).is_none()
-                    //         && finder2.find(&bgfx.code).is_none())
-                    // {
-                    //     continue;
-                    // };
-                    replace_bytes(&mut bgfx.code, &finder, b"void main", replace_with);
-
-                    blob.clear();
-                    let _unused = bgfx.write(blob);
+fn handle_lightmaps(materialbin: &mut CompiledMaterialDefinition, version: MinecraftVersion, changed: &mut i32) {
+    //log::info!("mtbinloader25 handle_lightmaps");
+    let pattern = b"void main";
+//     let replace_with = b"
+// #define a_texcoord1 vec2(fract(a_texcoord1.x*15.9375)+0.0001,floor(a_texcoord1.x*15.9375)*0.0625+0.0001)
+// void main";
+    let mut replace_with: &[u8] = b"void main";
+    let lightmap_10023_11020: &[u8] = b"
+vec2 lightmapUtil_10023_11020_ead63a(vec2 tc1){
+    return clamp(vec2(uvec2(
+        uint(floor(tc1.x * 255.0)) & 15u,
+        uint(floor(tc1.x * 255.0)) >> 4u
+    ) & 15u) * 0.0625, 0.0, 1.0);
+}
+#ifdef a_texcoord1
+ #undef a_texcoord1
+#endif
+#define a_texcoord1 lightmapUtil_10023_11020_ead63a(a_texcoord1)
+void main";
+    let lightmap_10023_13028: &[u8] = b"
+vec2 lightmapUtil_10023_13028_190d99(vec2 tc1){
+    return clamp(vec2(uvec2(
+        uint(round(tc1.y * 65535.0)) >> 4u,
+        uint(round(tc1.y * 65535.0)) & 15u
+    ) & 15u) * 0.066666, 0.0, 1.0);
+}
+#ifdef a_texcoord1
+ #undef a_texcoord1
+#endif
+#define a_texcoord1 lightmapUtil_10023_13028_190d99(a_texcoord1)
+void main";
+    let lightmap_11020_13028: &[u8] = b"
+vec2 lightmapUtil_11020_13028_274db2(vec2 tc1){
+    uvec2 uv = uvec2(
+        uint(round(tc1.y * 65535.0)) >> 4u,
+        uint(round(tc1.y * 65535.0)) & 15u
+    ) & 15u;
+    return vec2(float((uv.y << 4u) | uv.x) / 255.0, 0.0);
+}
+#ifdef a_texcoord1
+ #undef a_texcoord1
+#endif
+#define a_texcoord1 lightmapUtil_11020_13028_274db2(a_texcoord1)
+void main";
+    let finder = Finder::new(pattern);
+    let finder1 = Finder::new(b"v_lightmapUV = a_texcoord1;");
+    let finder2 = Finder::new(b"v_lightmapUV=a_texcoord1;");
+    //let finder3 = Finder::new(b"#define a_texcoord1 ");
+    let finder4 = Finder::new(b"65535.0");
+    for (_, code) in materialbin.passes.iter_mut()
+        .flat_map(|(_, pass)| &mut pass.variants)
+        .flat_map(|variants| &mut variants.shader_codes)
+        .filter(|(stage, _)| stage.stage == ShaderStage::Vertex
+            && (stage.platform == ShaderCodePlatform::Essl100
+            || stage.platform == ShaderCodePlatform::Essl300))
+    {
+        // if version == MinecraftVersion::V1_21_20 
+        // if stage.platform == ShaderCodePlatform::Essl100 
+        // if stage.platform_name != "ESSL_310" && (
+        // if version != MinecraftVersion::V1_21_110 
+        // log::warn!("Skipping replacement due to not existing lightmap UV assignment");
+        // let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
+        let blob = &mut code.bgfx_shader_data;
+        let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
+            continue;
+        };
+        if ( // shader is 1-21-100 or above
+            finder1.find(&bgfx.code).is_none() &&
+            finder2.find(&bgfx.code).is_none()
+        ) { 
+            if version >= MinecraftVersion::V1_21_110 &&
+                finder4.find(&bgfx.code).is_some()
+            { //shader is already 1-21-130
+                log::info!("finder already 1_21_130!!! Skipping replacement...");   
+                continue;
+            } else {
+                if MC_IS_1_21_130.load(Ordering::Acquire)
+                {
+                    log::info!("autofix: 11020 -> 13028");
+                    replace_with = lightmap_11020_13028;
+                } else {
+                    log::info!("finder already 1_21_110!!! Skipping replacement...");   
+                    continue;
                 }
             }
+        } else {
+            if MC_IS_1_21_130.load(Ordering::Acquire)
+            {
+                log::info!("autofix: 10023 -> 13028");
+                replace_with = lightmap_10023_13028;
+            } else {
+                log::info!("autofix: 10023 -> 11020");
+                replace_with = lightmap_10023_11020;
+            }
         }
-    }
+        *changed += 1;
+        //log::info!("autofix is doing lightmap replacing...");
+        replace_bytes(&mut bgfx.code, &finder, pattern, replace_with);
+        // code.bgfx_shader_data.clear();
+        // bgfx.write(&mut code.bgfx_shader_data).unwrap();
+        blob.clear();
+        let _unused = bgfx.write(blob);
+    };
 }
 // fn cmp_ign_whitespace(str1: &str, str2: &str) -> bool {
 //     str1.chars().filter(|c| !c.is_whitespace()).eq(str2.chars())
 // }
 fn handle_samplers(materialbin: &mut CompiledMaterialDefinition) {
+    //log::info!("mtbinloader25 handle_samplers");
     let pattern = b"void main ()";
-    let replace_with = b"
+    let replace_with: &[u8] = b"
 #if __VERSION__ >= 300
  #define texture(tex,uv) textureLod(tex,uv,0.0)
 #else
@@ -242,21 +318,19 @@ fn handle_samplers(materialbin: &mut CompiledMaterialDefinition) {
 #endif
 void main ()";
     let finder = Finder::new(pattern);
-    for (_passes, pass) in &mut materialbin.passes {
-        if _passes == "AlphaTest" || _passes == "Opaque" {
-            for variants in &mut pass.variants {
-                for (stage, code) in &mut variants.shader_codes {
-                    if stage.stage == ShaderStage::Fragment && stage.platform_name == "ESSL_100" {
-                        log::info!("handle_samplers");
-                        let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
-                        replace_bytes(&mut bgfx.code, &finder, pattern, replace_with);
-                        code.bgfx_shader_data.clear();
-                        bgfx.write(&mut code.bgfx_shader_data).unwrap();
-                    }
-                }
-            }
-        }
-    }
+    for (_, code) in materialbin.passes.iter_mut()
+        .filter(|(passes, _)| *passes == "AlphaTest" || *passes == "Opaque")
+        .flat_map(|(_, pass)| &mut pass.variants)
+        .flat_map(|variants| &mut variants.shader_codes)
+        .filter(|(stage, _)| stage.stage == ShaderStage::Fragment
+            && stage.platform_name == "ESSL_100")
+    {
+        log::info!("handling texture sampler to disable mipmap...");
+        let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
+        replace_bytes(&mut bgfx.code, &finder, pattern, replace_with);
+        code.bgfx_shader_data.clear();
+        bgfx.write(&mut code.bgfx_shader_data).unwrap();
+    };
 }
 
 fn replace_bytes(codebuf: &mut Vec<u8>, finder: &Finder, pattern: &[u8], replace_with: &[u8]) {
