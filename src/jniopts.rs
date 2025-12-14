@@ -1,11 +1,12 @@
-use std::sync::{LazyLock, Mutex};
-
 use jni::{
-    objects::{AsJArrayRaw, JObject, JObjectArray, JPrimitiveArray, JString},
+    objects::{JObject, JString},
     sys::{jboolean, JNI_TRUE},
     JNIEnv,
 };
 use materialbin::{MinecraftVersion, ALL_VERSIONS};
+use std::sync::{LazyLock, Mutex};
+
+use crate::LockResultExt;
 pub struct Options {
     pub handle_lightmaps: bool,
     pub handle_texturelods: bool,
@@ -27,16 +28,26 @@ extern "C" fn Java_io_bambosan_mbloader_launcherUtils_LibBindings_setAutofixVers
     _thiz: JObject,
     versions: jni::objects::JObjectArray,
 ) {
-    let sus = env.get_array_length(&versions).unwrap();
+    let sus = env
+        .get_array_length(&versions)
+        .expect("Error while getting array length");
     let mut rs_versions = Vec::new();
     for index in 0..sus {
-        let string = env.get_object_array_element(&versions, index).unwrap();
+        let string = env
+            .get_object_array_element(&versions, index)
+            .expect("Error while reading jni array element");
         let string: JString = string.into();
         //        if !env.is_instance_of(string, "String")
-        let sus = env.get_string(&string).unwrap();
-        rs_versions.push(version_from_string(sus.to_str().unwrap()).unwrap());
+        let sus = env
+            .get_string(&string)
+            .expect("Error while getting jni string");
+        rs_versions.push(
+            version_from_string(sus.to_str().expect("Java string isnt utf8"))
+                .expect("Version string didnt match any mtbin format "),
+        );
     }
-    OPTS.lock().unwrap().autofixer_versions = rs_versions;
+    let mut opts = OPTS.lock().ignore_poison();
+    opts.autofixer_versions = rs_versions;
 }
 fn version_from_string(string: &str) -> Option<MinecraftVersion> {
     let mcversion = match string {
@@ -55,7 +66,8 @@ extern "C" fn Java_io_bambosan_mbloader_launcherUtils_LibBindings_setLightmapAut
     _thiz: JObject,
     on: jboolean,
 ) {
-    OPTS.lock().unwrap().handle_lightmaps = on == JNI_TRUE;
+    let mut opts = OPTS.lock().ignore_poison();
+    opts.handle_lightmaps = on == JNI_TRUE;
 }
 #[no_mangle]
 extern "C" fn Java_io_bambosan_mbloader_launcherUtils_LibBindings_setTextureLodAutofixer(
@@ -63,5 +75,6 @@ extern "C" fn Java_io_bambosan_mbloader_launcherUtils_LibBindings_setTextureLodA
     _thiz: JObject,
     on: jboolean,
 ) {
-    OPTS.lock().unwrap().handle_texturelods = on == JNI_TRUE;
+    let mut opts = OPTS.lock().ignore_poison();
+    opts.handle_texturelods = on == JNI_TRUE;
 }
