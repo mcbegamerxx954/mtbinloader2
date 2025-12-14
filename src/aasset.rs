@@ -5,9 +5,7 @@ use crate::{
     LockResultExt,
 };
 use libc::{c_char, c_int, c_void, off64_t, off_t, size_t};
-
 use ndk_sys::{AAsset, AAssetManager};
-use once_cell::sync::Lazy;
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
@@ -16,7 +14,7 @@ use std::{
     io::{self, Read, Seek},
     os::unix::ffi::OsStrExt,
     path::Path,
-    ptr,
+    //    ptr,
     sync::{LazyLock, Mutex},
 };
 static MC_FILELOADER: LazyLock<Mutex<FileLoader>> = LazyLock::new(|| Mutex::new(FileLoader::new()));
@@ -27,8 +25,8 @@ struct AAssetPtr(*const ndk_sys::AAsset);
 unsafe impl Send for AAssetPtr {}
 
 // The assets we have registered to replace data about
-static mut WANTED_ASSETS: Lazy<UnsafeCell<HashMap<AAssetPtr, Buffer>>> =
-    Lazy::new(|| UnsafeCell::new(HashMap::new()));
+static mut WANTED_ASSETS: LazyLock<UnsafeCell<HashMap<AAssetPtr, Buffer>>> =
+    LazyLock::new(|| UnsafeCell::new(HashMap::new()));
 
 pub unsafe extern "C" fn open(
     man: *mut AAssetManager,
@@ -92,10 +90,7 @@ pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size
     };
     // Reuse buffer given by caller
     let rs_buffer = core::slice::from_raw_parts_mut(buf as *mut u8, count);
-    let read_total = match (*file).read(rs_buffer) {
-        Ok(n) => n,
-        Err(e) => return e.to_c_result(),
-    };
+    let read_total = handle_result!((*file).read(rs_buffer));
     handle_result!(read_total.try_into())
 }
 
@@ -195,10 +190,7 @@ fn seek_facade(offset: i64, whence: c_int, file: &mut Buffer) -> i64 {
     let offset = match whence {
         libc::SEEK_SET => {
             //Let's check this so we don't mess up
-            let u64_off = match u64::try_from(offset) {
-                Ok(uoff) => uoff,
-                Err(e) => return e.to_c_result(),
-            };
+            let u64_off = handle_result!(u64::try_from(offset));
             io::SeekFrom::Start(u64_off)
         }
         libc::SEEK_CUR => io::SeekFrom::Current(offset),
@@ -209,41 +201,10 @@ fn seek_facade(offset: i64, whence: c_int, file: &mut Buffer) -> i64 {
         }
     };
     match file.seek(offset) {
-        Ok(new_offset) => match new_offset.try_into() {
-            Ok(int) => int,
-            Err(err) => err.to_c_result(),
-        },
-        Err(err) => err.to_c_result(),
-    }
-}
-
-trait AsCResult<T> {
-    fn to_c_result(&self) -> T;
-}
-impl<P, T: Error> AsCResult<*mut P> for T {
-    fn to_c_result(&self) -> *mut P {
-        log::error!("Error: {self}");
-        ptr::null_mut()
-    }
-}
-
-impl<P, T: Error> AsCResult<*const P> for T {
-    fn to_c_result(&self) -> *const P {
-        log::error!("Error: {self}");
-        ptr::null_mut()
-    }
-}
-
-impl<T: Error> AsCResult<c_int> for T {
-    fn to_c_result(&self) -> c_int {
-        log::error!("Error: {self}");
-        -1
-    }
-}
-
-impl<T: Error> AsCResult<off_t> for T {
-    fn to_c_result(&self) -> off_t {
-        log::error!("Error: {self}");
-        -1
+        Ok(new_offset) => handle_result!(new_offset.try_into()),
+        Err(err) => {
+            log::error!("seek Error: {err}");
+            return -1;
+        }
     }
 }
