@@ -1,3 +1,4 @@
+mod autofixer;
 #[deny(clippy::indexing_slicing)]
 mod cpp_string;
 use std::{
