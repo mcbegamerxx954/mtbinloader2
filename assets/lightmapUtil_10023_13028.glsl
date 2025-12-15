@@ -10,3 +10,4 @@ vec2 lightmapUtil_10023_13028_190d99(vec2 tc1){
 #endif
 #define a_texcoord1 lightmapUtil_10023_13028_190d99(a_texcoord1)
 
+
