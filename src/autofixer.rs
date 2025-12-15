@@ -220,6 +220,6 @@ fn add_bytes_before(codebuf: &mut Vec<u8>, finder: &Finder, replace_with: &[u8])
         Some(yay) => yay,
         None => return,
     };
-    let previous = position - 1;
+    let previous = position;
     codebuf.splice(previous..previous, replace_with.iter().cloned());
 }
