@@ -1,8 +1,9 @@
 
 vec2 lightmapUtil_10023_11020_ead63a(vec2 tc1){
+    uint tmp = uint(floor(tc1.x * 255.0));
     return clamp(vec2(uvec2(
-        uint(floor(tc1.x * 255.0)) & 15u,
-        uint(floor(tc1.x * 255.0)) >> 4u
+        tmp & 15u,
+        tmp >> 4u
     ) & 15u) * 0.0625, 0.0, 1.0);
 }
 #ifdef a_texcoord1

@@ -1,8 +1,9 @@
 
 vec2 lightmapUtil_11020_13028_274db2(vec2 tc1){
+    uint tmp = uint(round(tc1.y * 65535.0));
     uvec2 uv = uvec2(
-        uint(round(tc1.y * 65535.0)) >> 4u,
-        uint(round(tc1.y * 65535.0)) & 15u
+        tmp >> 4u,
+        tmp & 15u
     ) & 15u;
     return vec2(float((uv.y << 4u) | uv.x) / 255.0, 0.0);
 }
