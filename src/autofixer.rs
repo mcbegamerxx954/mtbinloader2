@@ -126,10 +126,11 @@ fn handle_lightmaps(
     let lightmap_10023_11020: &[u8] = include_bytes!("../assets/lightmapUtil_10023_11020.glsl");
     let lightmap_10023_13028: &[u8] = include_bytes!("../assets/lightmapUtil_10023_13028.glsl");
     let lightmap_11020_13028: &[u8] = include_bytes!("../assets/lightmapUtil_11020_13028.glsl");
-    let finder = Finder::new(pattern);
-    let finder1 = Finder::new(b"v_lightmapUV = a_texcoord1;");
-    let finder2 = Finder::new(b"v_lightmapUV=a_texcoord1;");
-    let finder4 = Finder::new(b"65535.0");
+    let main_start = Finder::new(pattern);
+    let legacy_assign = Finder::new(b"v_lightmapUV = a_texcoord1;");
+    let legacy_assign2 = Finder::new(b"v_lightmapUV=a_texcoord1;");
+    let magic_fix_number = Finder::new(b"65535.0");
+    let newbx_fix = Finder::new("vec2(256.0, 4096.0)");
     for (_, code) in materialbin
         .passes
         .iter_mut()
@@ -151,22 +152,24 @@ fn handle_lightmaps(
         let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
             continue;
         };
-        let mc_1_21_130 = MC_IS_1_21_130.load(Ordering::Acquire);
-        // shader is 1-21-100 or above
+        let is_1_21_130 = MC_IS_1_21_130.load(Ordering::Acquire);
+        let has_fix =
+            magic_fix_number.find(&bgfx.code).is_some() || newbx_fix.find(&bgfx.code).is_some();
         let replace_with: &[u8];
-        if finder1.find(&bgfx.code).is_none() && finder2.find(&bgfx.code).is_none() {
-            if version >= MinecraftVersion::V1_21_110 && finder4.find(&bgfx.code).is_some() {
+        // shader is 1-21-100 or above
+        if legacy_assign.find(&bgfx.code).is_none() && legacy_assign2.find(&bgfx.code).is_none() {
+            if version >= MinecraftVersion::V1_21_110 && has_fix {
                 //shader is already 1-21-130
                 log::info!("finder already 1_21_130!!! Skipping replacement...");
                 continue;
-            } else if mc_1_21_130 {
+            } else if is_1_21_130 {
                 log::info!("autofix: 11020 -> 13028");
                 replace_with = lightmap_11020_13028;
             } else {
                 log::info!("finder already 1_21_110!!! Skipping replacement...");
                 continue;
             }
-        } else if mc_1_21_130 {
+        } else if is_1_21_130 {
             log::info!("autofix: 10023 -> 13028");
             replace_with = lightmap_10023_13028;
         } else {
@@ -175,7 +178,7 @@ fn handle_lightmaps(
         }
         *changed += 1;
         //log::info!("autofix is doing lightmap replacing...");
-        add_bytes_before(&mut bgfx.code, &finder, replace_with);
+        add_bytes_before(&mut bgfx.code, &main_start, replace_with);
         blob.clear();
         let _unused = bgfx.write(blob);
     }
