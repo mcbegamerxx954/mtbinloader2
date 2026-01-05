@@ -4,22 +4,16 @@ mod cpp_string;
 mod loader;
 use std::{
     fs,
-    pin::Pin,
-    ptr::null_mut,
-    sync::{atomic::AtomicPtr, LockResult, OnceLock},
+    sync::{LockResult, Mutex},
 };
 mod aasset;
 mod jniopts;
 mod plthook;
-use crate::plthook::replace_plt_functions;
+use crate::{loader::ResourcePackManager, plthook::replace_plt_functions};
 use bhook::hook_fn;
 use bstr::ByteSlice;
-use cpp_string::ResourceLocation;
 //use bstr::ByteSlice;
 use atoi::FromRadix16;
-use core::mem::transmute;
-use cxx::CxxString;
-use libc::c_void;
 use plt_rs::DynamicLibrary;
 use tinypatscan::Pattern;
 
@@ -198,30 +192,25 @@ fn find_lib<'a>(target_name: &str) -> Option<plt_rs::LoadedLibrary<'a>> {
         .find(|lib| lib.name().contains(target_name))
 }
 // A resource pack manager object
-pub static PACKM_OBJ: AtomicPtr<libc::c_void> = AtomicPtr::new(null_mut());
+pub static PACKM_OBJ: Mutex<Option<ResourcePackManager>> = Mutex::new(None);
 // The resource pack manager load function
-pub static RPM_LOAD: OnceLock<RpmLoadFn> = OnceLock::new();
+// pub static RPM_LOAD: OnceLock<RpmLoadFn> = OnceLock::new();
 
 hook_fn! {
     fn rpm_ctor(this: *mut libc::c_void,unk1: usize,unk2: usize,needs_init: bool) -> *mut libc::c_void = {
-        use std::sync::atomic::Ordering;
+
+        use crate::loader::ResourcePackManager;
+        use crate::LockResultExt;
         log::info!("rpm ctor called");
         let result = call_original(this, unk1, unk2, needs_init);
         log::info!("RPM pointer has been obtained");
-        crate::PACKM_OBJ.store(this, Ordering::Release);
-        crate::RPM_LOAD.set(crate::get_load(this)).expect("Load function is only hooked once");
+        *crate::PACKM_OBJ.lock().ignore_poison() = Some(ResourcePackManager::wrap(this));
+
         // Not doing this just adds overhead
         self_disable();
         log::info!("hook exit");
         result
     }
-}
-
-type RpmLoadFn = unsafe extern "C" fn(*mut c_void, ResourceLocation, Pin<&mut CxxString>) -> bool;
-/// Ahh c++, truly the language of all time
-unsafe fn get_load(packm_ptr: *mut c_void) -> RpmLoadFn {
-    let vptr = *transmute::<*mut c_void, *mut *mut *const u8>(packm_ptr);
-    transmute::<*const u8, RpmLoadFn>(*vptr.offset(2))
 }
 
 pub trait LockResultExt {

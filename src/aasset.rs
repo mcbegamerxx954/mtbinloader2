@@ -9,7 +9,6 @@ use ndk_sys::{AAsset, AAssetManager};
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
-    error::Error,
     ffi::{CStr, OsStr},
     io::{self, Read, Seek},
     os::unix::ffi::OsStrExt,

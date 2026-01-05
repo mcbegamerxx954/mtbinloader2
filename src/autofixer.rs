@@ -131,7 +131,7 @@ fn handle_lightmaps(
     let legacy_assign2 = Finder::new(b"v_lightmapUV=a_texcoord1;");
     let magic_fix_number = Finder::new(b"65535.0");
     let newbx_fix = Finder::new("vec2(256.0, 4096.0)");
-    for (_, code) in materialbin
+    for (_, scode) in materialbin
         .passes
         .iter_mut()
         .flat_map(|(_, pass)| &mut pass.variants)
@@ -148,16 +148,16 @@ fn handle_lightmaps(
         // if version != MinecraftVersion::V1_21_110
         // log::warn!("Skipping replacement due to not existing lightmap UV assignment");
         // let mut bgfx: BgfxShader = code.bgfx_shader_data.pread(0).unwrap();
-        let blob = &mut code.bgfx_shader_data;
-        let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
-            continue;
-        };
+        //        let blob = &mut code.bgfx_shader_data;
+        // let Ok(mut bgfx) = blob.pread::<BgfxShader>(0) else {
+        //     continue;
+        // };
+        let code = &scode.bgfx_shader_data;
         let is_1_21_130 = MC_IS_1_21_130.load(Ordering::Acquire);
-        let has_fix =
-            magic_fix_number.find(&bgfx.code).is_some() || newbx_fix.find(&bgfx.code).is_some();
+        let has_fix = magic_fix_number.find(code).is_some() || newbx_fix.find(code).is_some();
         let replace_with: &[u8];
         // shader is 1-21-100 or above
-        if legacy_assign.find(&bgfx.code).is_none() && legacy_assign2.find(&bgfx.code).is_none() {
+        if legacy_assign.find(code).is_none() && legacy_assign2.find(code).is_none() {
             if version >= MinecraftVersion::V1_21_110 && has_fix {
                 //shader is already 1-21-130
                 log::info!("finder already 1_21_130!!! Skipping replacement...");
@@ -178,9 +178,9 @@ fn handle_lightmaps(
         }
         *changed += 1;
         //log::info!("autofix is doing lightmap replacing...");
-        add_bytes_before(&mut bgfx.code, &main_start, replace_with);
-        blob.clear();
-        let _unused = bgfx.write(blob);
+        add_bytes_before(&mut scode.bgfx_shader_data, &main_start, replace_with);
+        //        blob.clear();
+        //        let _unused = bgfx.write(blob);
     }
 }
 // fn cmp_ign_whitespace(str1: &str, str2: &str) -> bool {

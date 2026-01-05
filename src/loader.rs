@@ -1,13 +1,16 @@
-use crate::cpp_string::{ResourceLocation, StackString};
+use crate::{
+    cpp_string::{ResourceLocation, StackString},
+    LockResultExt,
+};
 use cxx::CxxString;
 use ndk::asset::AssetManager;
 use std::{
     io::{self, Cursor, Read, Seek, Write},
+    mem::transmute,
     ops::{Deref, DerefMut},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::atomic::Ordering,
 };
 
 pub enum BufferCursor {
@@ -79,39 +82,26 @@ impl FileLoader {
         for replacement in replacement_list {
             // Remove the prefix we want to change
             if let Ok(file) = stripped.strip_prefix(replacement.0) {
-                let mut cxx_storage = StackString::new();
-                let mut cxx_ptr = unsafe { cxx_storage.init("") };
-                let Some(loadfn) = crate::RPM_LOAD.get() else {
-                    log::warn!("ResourcePackManager fn is not ready yet?");
-                    return None;
-                };
                 let mut resource_loc = ResourceLocation::new();
                 let mut cpppath = ResourceLocation::get_path(&mut resource_loc);
                 opt_path_join(cpppath.as_mut(), &[Path::new(replacement.1), file]);
-                let packm_ptr = crate::PACKM_OBJ.load(Ordering::Acquire);
-                if packm_ptr.is_null() {
+                let packm = crate::PACKM_OBJ.lock().ignore_poison();
+                let Some(packm) = packm.as_ref() else {
                     log::error!("ResourcePackManager ptr is null");
                     return None;
-                }
-                unsafe {
-                    loadfn(packm_ptr, resource_loc, cxx_ptr.as_mut());
-                }
-                if cxx_ptr.is_empty() {
+                };
+                let Some(stack_str) = packm.load_resource(resource_loc) else {
                     log::info!("Cannot find file: {}", cpppath.as_ref());
                     return None;
-                }
+                };
                 log::info!("Loaded ResourcePack file: {}", cpppath.as_ref());
-                let buffer = if file
-                    .as_os_str()
-                    .as_encoded_bytes()
-                    .ends_with(b".material.bin")
-                {
-                    match crate::autofixer::process_material(manager, cxx_ptr.as_bytes()) {
+                let buffer = if file.as_os_str().as_bytes().ends_with(b".material.bin") {
+                    match crate::autofixer::process_material(manager, stack_str.as_ref()) {
                         Some(updated) => BufferCursor::Vec(Cursor::new(updated)),
-                        None => BufferCursor::Cxx(Cursor::new(cxx_storage)),
+                        None => BufferCursor::Cxx(Cursor::new(stack_str)),
                     }
                 } else {
-                    BufferCursor::Cxx(Cursor::new(cxx_storage))
+                    BufferCursor::Cxx(Cursor::new(stack_str))
                 };
                 let cache = Buffer::new(path.to_path_buf(), buffer);
                 // ResourceLocation gets dropped (also cxx_storage if its not needed)
@@ -154,5 +144,35 @@ fn opt_path_join(mut bytes: Pin<&mut CxxString>, paths: &[&Path]) {
         writer
             .write(osstr)
             .expect("Error while writing path to stack path");
+    }
+}
+pub struct ResourcePackManager(*mut libc::c_void);
+// Technically we can pass this everywhere as its just a handle basically
+//unsafe impl Sync for ResourcePackManager {}
+unsafe impl Send for ResourcePackManager {}
+impl ResourcePackManager {
+    pub fn wrap(ptr: *mut libc::c_void) -> Self {
+        Self(ptr)
+    }
+    pub fn load_resource(&self, loc: ResourceLocation) -> Option<StackString> {
+        let vptr = unsafe { *transmute::<*mut libc::c_void, *mut *mut *const u8>(self.0) };
+        let loadfn = unsafe {
+            transmute::<
+                *const u8,
+                unsafe extern "C" fn(
+                    *mut libc::c_void,
+                    ResourceLocation,
+                    Pin<&mut CxxString>,
+                ) -> bool,
+            >(*vptr.offset(2))
+        };
+        let mut cxx_storage = StackString::new();
+        let mut cxx_ptr = unsafe { cxx_storage.init("") };
+        unsafe { loadfn(self.0, loc, cxx_ptr.as_mut()) };
+        if cxx_ptr.is_empty() {
+            None
+        } else {
+            Some(cxx_storage)
+        }
     }
 }
