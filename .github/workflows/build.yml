@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Setup Rust
         run: rustup update stable
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2  
       - name: Get version
         id: get-version
         run: |
@@ -26,8 +28,6 @@ jobs:
         shell: bash  
       - name: Install target
         run: rustup target add ${{matrix.target}}
-      - name: Setup Cache
-        uses: Swatinem/rust-cache@v2
       - name: build
         run: cargo ndk -t ${{matrix.target}} build --profile githubci 
       - name: Upload artifacts
