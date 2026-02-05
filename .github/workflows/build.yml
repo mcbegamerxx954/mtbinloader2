@@ -21,18 +21,15 @@ jobs:
         run: |
           echo "version=$(rustc --version)" >> $GITHUB_OUTPUT
         shell: bash
-      - name: Setup Docker Cache
-        uses: ScribeMD/docker-cache@0.5.0
-        with:
-          key: docker-${{ runner.os }}-${{ steps.get-version.outputs.version }}-${{ matrix.target }}
-      - name: Install cross-compilation tools
-        uses: taiki-e/setup-cross-toolchain-action@v1
-        with:
-          target: ${{ matrix.target }}    
+      - name: Install cargo ndk
+        run: cargo install cargo-ndk
+        shell: bash  
+      - name: Install target
+        run: rustup target add ${{matrix.target}}
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
       - name: build
-        run: cargo build --profile githubci
+        run: cargo ndk -t ${{matrix.target}} build --profile githubci 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
