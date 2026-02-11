@@ -75,7 +75,7 @@ pub fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
         let mut material: CompiledMaterialDefinition = match data.pread_with(0, version) {
             Ok(data) => data,
             Err(e) => {
-                log::trace!("[version] Parsing failed: {e}");
+                log::trace!("[{version}] Parsing failed: {e}");
                 continue;
             }
         };

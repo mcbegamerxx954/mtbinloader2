@@ -370,7 +370,7 @@ source = "git+https://github.com/mcbegamerxx954/materialbin#88c780335d2e6e2b0012
 dependencies = [
  "byteorder",
  "indexmap",
- "scroll 0.13.0",
+ "scroll",
 ]
 
 [[package]]
@@ -401,7 +401,7 @@ dependencies = [
  "page_size",
  "plt-rs",
  "region",
- "scroll 0.12.0",
+ "scroll",
  "tinypatscan",
 ]
 
@@ -566,12 +566,6 @@ name = "scratch"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
-
-[[package]]
-name = "scroll"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ab8598aa408498679922eff7fa985c25d58a90771bd6be794434c5277eab1a6"
 
 [[package]]
 name = "scroll"
