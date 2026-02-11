@@ -113,7 +113,7 @@ pub fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
         }
         return Some(output);
     }
-    log::errir!("It seems like we couldnt process the materialbin");
+    log::error!("It seems like we couldnt process the materialbin");
     None
 }
 fn handle_lightmaps(
