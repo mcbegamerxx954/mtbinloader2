@@ -76,10 +76,11 @@ pub fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
         let mut material: CompiledMaterialDefinition = match data.pread_with(0, version) {
             Ok(data) => data,
             Err(e) => {
-                log::trace!("[version] Parsing failed: {e}");
+                log::trace!("[{version}] Parsing failed: {e}");
                 continue;
             }
         };
+        log::info!("Processing mtbin: {} [{version}]", material.name);
         // we detect jaundice using finder instead of mtbin version
         let needs_lightmap_fix = material.name == "RenderChunk"
             && IS_1_21_100.load(Ordering::Acquire)
@@ -100,8 +101,7 @@ pub fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
             let mut changed = 0;
             handle_lightmaps(&mut material, version, &mut changed);
             log::info!("autofix have changed {changed} passes");
-            if changed == 0 {
-                log::info!("nothing changed, skip writting");
+            if changed == 0 && version == mcver {
                 return None; //shader is already 1.21.100+
             }
         }
