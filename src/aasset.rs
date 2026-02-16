@@ -65,27 +65,24 @@ macro_rules! handle_result {
 }
 
 pub unsafe extern "C" fn seek64(aasset: *mut AAsset, off: off64_t, whence: c_int) -> off64_t {
-    let file = match WANTED_ASSETS.get_mut().get_mut(&AAssetPtr(aasset)) {
-        Some(file) => file,
-        None => return ndk_sys::AAsset_seek64(aasset, off, whence),
+    let Some(file) = WANTED_ASSETS.get_mut().get_mut(&AAssetPtr(aasset)) else {
+        return ndk_sys::AAsset_seek64(aasset, off, whence);
     };
     handle_result!(seek_facade(off, whence, file).try_into())
 }
 
 pub unsafe extern "C" fn seek(aasset: *mut AAsset, off: off_t, whence: c_int) -> off_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
-    let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
-        Some(file) => file,
-        None => return ndk_sys::AAsset_seek(aasset, off, whence),
+    let Some(file) = wanted_assets.get_mut(&AAssetPtr(aasset)) else {
+        return ndk_sys::AAsset_seek(aasset, off, whence);
     };
     handle_result!(seek_facade(off.into(), whence, file).try_into())
 }
 
 pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size_t) -> c_int {
     let wanted_assets = WANTED_ASSETS.get_mut();
-    let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
-        Some(file) => file,
-        None => return ndk_sys::AAsset_read(aasset, buf, count),
+    let Some(file) = wanted_assets.get_mut(&AAssetPtr(aasset)) else {
+        return ndk_sys::AAsset_read(aasset, buf, count);
     };
     // Reuse buffer given by caller
     let rs_buffer = core::slice::from_raw_parts_mut(buf as *mut u8, count);
@@ -95,36 +92,32 @@ pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size
 
 pub unsafe extern "C" fn len(aasset: *mut AAsset) -> off_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
-    let file = match wanted_assets.get(&AAssetPtr(aasset)) {
-        Some(file) => file,
-        None => return ndk_sys::AAsset_getLength(aasset),
+    let Some(file) = wanted_assets.get(&AAssetPtr(aasset)) else {
+        return ndk_sys::AAsset_getLength(aasset);
     };
     handle_result!(file.get_ref().len().try_into())
 }
 
 pub unsafe extern "C" fn len64(aasset: *mut AAsset) -> off64_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
-    let file = match wanted_assets.get(&AAssetPtr(aasset)) {
-        Some(file) => file,
-        None => return ndk_sys::AAsset_getLength64(aasset),
+    let Some(file) = wanted_assets.get(&AAssetPtr(aasset)) else {
+        return ndk_sys::AAsset_getLength64(aasset);
     };
     handle_result!(file.get_ref().len().try_into())
 }
 
 pub unsafe extern "C" fn rem(aasset: *mut AAsset) -> off_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
-    let file = match wanted_assets.get(&AAssetPtr(aasset)) {
-        Some(file) => file,
-        None => return ndk_sys::AAsset_getRemainingLength(aasset),
+    let Some(file) = wanted_assets.get(&AAssetPtr(aasset)) else {
+        return ndk_sys::AAsset_getRemainingLength(aasset);
     };
     handle_result!((file.get_ref().len() - file.position() as usize).try_into())
 }
 
 pub unsafe extern "C" fn rem64(aasset: *mut AAsset) -> off64_t {
     let wanted_assets = WANTED_ASSETS.get_mut();
-    let file = match wanted_assets.get(&AAssetPtr(aasset)) {
-        Some(file) => file,
-        None => return ndk_sys::AAsset_getRemainingLength64(aasset),
+    let Some(file) = wanted_assets.get(&AAssetPtr(aasset)) else {
+        return ndk_sys::AAsset_getRemainingLength64(aasset);
     };
     handle_result!((file.get_ref().len() - file.position() as usize).try_into())
 }
@@ -139,9 +132,8 @@ pub unsafe extern "C" fn close(aasset: *mut AAsset) {
 
 pub unsafe extern "C" fn get_buffer(aasset: *mut AAsset) -> *const c_void {
     let wanted_assets = WANTED_ASSETS.get_mut();
-    let file = match wanted_assets.get_mut(&AAssetPtr(aasset)) {
-        Some(file) => file,
-        None => return ndk_sys::AAsset_getBuffer(aasset),
+    let Some(file) = wanted_assets.get_mut(&AAssetPtr(aasset)) else {
+        return ndk_sys::AAsset_getBuffer(aasset);
     };
     // Let's hope this does not go boom boom
     file.get_ref().as_ptr().cast()
