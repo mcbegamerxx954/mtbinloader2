@@ -34,12 +34,9 @@ pub unsafe extern "C" fn open(
 ) -> *mut AAsset {
     // This is where UB can happen, but we are merely a hook.
     let aasset = unsafe { ndk_sys::AAssetManager_open(man, fname, mode) };
-    let pointer = match std::ptr::NonNull::new(man) {
-        Some(yay) => yay,
-        None => {
-            log::warn!("AssetManager is null?, preposterous, mc detection failed");
-            return aasset;
-        }
+    let Some(pointer) = std::ptr::NonNull::new(man) else {
+        log::warn!("AssetManager is null?, preposterous, mc detection failed");
+        return aasset;
     };
     let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
     let c_str = unsafe { CStr::from_ptr(fname) };
