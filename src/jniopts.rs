@@ -56,7 +56,7 @@ fn version_from_string(string: &str) -> Option<MinecraftVersion> {
         "v1.20.80" => MinecraftVersion::V1_20_80,
         "v1.21.20" => MinecraftVersion::V1_21_20,
         "v1.21.110" => MinecraftVersion::V1_21_110,
-        "v26.0.24" => MinecraftVersion::V26_0_24
+        "v26.0.24" => MinecraftVersion::V26_0_24,
         _ => return None,
     };
     Some(mcversion)
