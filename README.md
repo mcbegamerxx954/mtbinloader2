@@ -16,6 +16,7 @@ A well optimized and featureful loader for the block game
 # Building
 ## Requirements
 - Rust (latest as possible)
+- Your target android architecture's rust target installed
 - Ndk r25+ installed
 
 ## Building the .so
