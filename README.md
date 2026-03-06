@@ -3,7 +3,7 @@ A well optimized and featureful loader for the block game
 
 # Features
 - Supports loading materialbins,camerafiles, and replacing existing oreui files
-- Low loading overhead
+- Low file loading overhead
 - Can automatically fix shaders as possible most of the time (with caveats)
 - Highly modifiable sourcecode
 - Low size (300-450kb)
