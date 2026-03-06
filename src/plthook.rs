@@ -11,11 +11,15 @@ pub fn replace_plt_functions<const LEN: usize>(
     functions: [(&str, *const u8); LEN],
 ) {
     let base_addr = dyn_lib.library().addr();
+    let Some(table) = get_function_table(dyn_lib) else {
+        log::warn!("Wtf");
+        return;
+    };
     for (fn_name, replacement) in functions {
-        let Some(fn_plt) = dyn_lib.try_find_function(fn_name) else {
-            continue;
-        };
-        replace_plt_function(base_addr, fn_plt.r_offset as usize, replacement);
+        let name = Cow::Borrowed(fn_name);
+        if let Some(fn_plt) = table.get(&name) {
+            replace_plt_function(base_addr, fn_plt.r_offset as usize, replacement);
+        }
     }
 }
 fn replace_plt_function(base_addr: usize, offset: usize, replacement: *const u8) {
@@ -33,82 +37,62 @@ fn replace_plt_function(base_addr: usize, offset: usize, replacement: *const u8)
 // /// Finding target function differs on 32 bit and 64 bit.
 // /// On 32 bit we want to check the relocations table only, opposed to the addend relocations table.
 // /// Additionally, we will fall back to the plt given it is an addendless relocation table.
-// #[cfg(target_pointer_width = "32")]
-// pub fn try_find_function(&self, symbol_name: &str) -> Option<&'_ elf32::DynRel> {
-//     let string_table = self.string_table();
-//     let dyn_symbols = self.symbols()?;
-//     if let Some(dyn_relas) = self.relocs() {
-//         let dyn_relas = dyn_relas.entries().iter();
-//         if let Some(symbol) = dyn_relas
-//             .flat_map(|e| {
-//                 dyn_symbols
-//                     .resolve_name(e.symbol_index() as usize, string_table)
-//                     .map(|s| (e, s))
-//             })
-//             .filter(|(_, s)| s.eq(symbol_name))
-//             .next()
-//             .map(|(target_function, _)| target_function)
-//         {
-//             return Some(symbol);
-//         }
-//     }
 
-//     if let Some(dyn_relas) = self.plt_rel() {
-//         let dyn_relas = dyn_relas.entries().iter();
-//         if let Some(symbol) = dyn_relas
-//             .flat_map(|e| {
-//                 dyn_symbols
-//                     .resolve_name(e.symbol_index() as usize, string_table)
-//                     .map(|s| (e, s))
-//             })
-//             .filter(|(_, s)| s.eq(symbol_name))
-//             .next()
-//             .map(|(target_function, _)| target_function)
-//         {
-//             return Some(symbol);
-//         }
-//     }
-//     None
-// }
+macro_rules! collect_entries {
+    ($iter:ident,$syms:expr,$table:expr) => {
+        $iter
+            .entries()
+            .iter()
+            .map(|e| {
+                $syms
+                    .resolve_name(e.symbol_index() as usize, $table)
+                    .map(|s| (s, e))
+            })
+            .flatten()
+        //            .collect()
+    };
+}
+
+#[cfg(target_pointer_width = "32")]
+pub fn get_function_table<'a>(
+    dnlib: &'a DynamicLibrary,
+) -> Option<HashMap<Cow<'a, str>, &'a plt_rs::elf32::DynRel>> {
+    let string_table = dnlib.string_table();
+    let dyn_symbols = dnlib.symbols()?;
+    let mut hashmap = HashMap::new();
+    if let Some(dyn_relas) = dnlib.relocs() {
+        let iter = collect_entries!(dyn_relas, dyn_symbols, string_table);
+        hashmap.extend(iter);
+    }
+
+    if let Some(dyn_relas) = dnlib.plt_rel() {
+        let iter = collect_entries!(dyn_relas, dyn_symbols, string_table);
+        hashmap.extend(iter);
+    }
+    None
+}
 
 // /// Finding target function differs on 32 bit and 64 bit.
 // /// On 64 bit we want to check the addended relocations table only, opposed to the addendless relocations table.
 // /// Additionally, we will fall back to the plt given it is an addended relocation table.
-// #[cfg(target_pointer_width = "64")]
-// pub fn get_function_table<'a>(
-//     dnlib: &'a DynamicLibrary,
-// ) -> Option<HashMap<Cow<'a, str>, &'a DynRela>> {
-//     let string_table = dnlib.string_table();
-//     let symbols = dnlib.symbols()?;
-//     let mut hashmap = HashMap::new();
-//     if let Some(dyn_relas) = dnlib.addend_relocs() {
-//         hashmap.reserve(dyn_relas.entries().len());
-//         let dyn_relas = dyn_relas.entries().iter();
-//         for entry in dyn_relas {
-//             let Some(name) = symbols.resolve_name(entry.symbol_index() as usize, &string_table)
-//             else {
-//                 continue;
-//             };
-//             hashmap.insert(name, entry);
-//         }
-//     }
-
-//     if let Some(dyn_relas) = dnlib.plt_rela() {
-//         hashmap.reserve(dyn_relas.entries().len());
-
-//         let dyn_relas = dyn_relas.entries().iter();
-//         let dyn_relas = dyn_relas.entries().iter();
-//         for entry in dyn_relas {
-//             let Some(name) = symbols.resolve_name(entry.symbol_index() as usize, &string_table)
-//             else {
-//                 continue;
-//             };
-//             hashmap.insert(name, entry);
-//         }
-//     }
-//     if hashmap.is_empty() {
-//         None
-//     } else {
-//         Some(hashmap)
-//     }
-// }
+#[cfg(target_pointer_width = "64")]
+pub fn get_function_table<'a>(
+    dnlib: &'a DynamicLibrary,
+) -> Option<HashMap<Cow<'a, str>, &'a plt_rs::elf64::DynRela>> {
+    let string_table = dnlib.string_table();
+    let symbols = dnlib.symbols()?;
+    let mut hashmap = HashMap::new();
+    if let Some(dyn_relas) = dnlib.addend_relocs() {
+        let entries = collect_entries!(dyn_relas, &symbols, &string_table);
+        hashmap.extend(entries);
+    }
+    if let Some(dyn_relas) = dnlib.plt_rela() {
+        let entries = collect_entries!(dyn_relas, &symbols, &string_table);
+        hashmap.extend(entries);
+    }
+    if hashmap.is_empty() {
+        None
+    } else {
+        Some(hashmap)
+    }
+}
