@@ -32,24 +32,19 @@ pub unsafe extern "C" fn open(
     mode: c_int,
 ) -> *mut AAsset {
     // This is where UB can happen, but we are merely a hook.
-    let aasset = unsafe { ndk_sys::AAssetManager_open(man, fname, mode) };
-    let Some(pointer) = std::ptr::NonNull::new(man) else {
-        log::warn!("AssetManager is null?, preposterous, mc detection failed");
-        return aasset;
-    };
-    let manager = unsafe { ndk::asset::AssetManager::from_ptr(pointer) };
+    let asset = ndk_sys::AAssetManager_open(man, fname, mode);
     let c_str = unsafe { CStr::from_ptr(fname) };
     let raw_cstr = c_str.to_bytes();
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
     let mut sus = MC_FILELOADER.lock().ignore_poison();
-    if let Some(yay) = sus.get_file(c_path, manager) {
+    if let Some(yay) = sus.get_file(c_path) {
         WANTED_ASSETS
             .lock()
             .ignore_poison()
-            .insert(AAssetPtr(aasset), yay);
+            .insert(AAssetPtr(asset), yay);
     }
-    aasset
+    asset
 }
 macro_rules! handle_result {
     ($expr:expr) => {

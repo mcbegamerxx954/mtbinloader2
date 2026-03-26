@@ -3,7 +3,7 @@ use crate::{
     LockResultExt,
 };
 use cxx::CxxString;
-use ndk::asset::AssetManager;
+// use ndk::asset::AssetManager;
 use std::{
     io::{self, Cursor, Read, Seek, Write},
     mem::transmute,
@@ -64,7 +64,7 @@ impl FileLoader {
     pub fn new() -> Self {
         Self { last_buffer: None }
     }
-    pub fn get_file(&mut self, path: &Path, manager: AssetManager) -> Option<Buffer> {
+    pub fn get_file(&mut self, path: &Path) -> Option<Buffer> {
         let stripped = path.strip_prefix("assets/").unwrap_or(path);
         if let Some(mut cache) = self.last_buffer.take_if(|c| c.name == path) {
             log::info!("Cache hit!: {:#?}", path);
@@ -95,14 +95,7 @@ impl FileLoader {
                     return None;
                 };
                 log::info!("Loaded ResourcePack file: {}", cpppath.as_ref());
-                let buffer = if file.as_os_str().as_bytes().ends_with(b".material.bin") {
-                    match crate::autofixer::process_material(manager, stack_str.as_ref()) {
-                        Some(updated) => BufferCursor::Vec(Cursor::new(updated)),
-                        None => BufferCursor::Cxx(Cursor::new(stack_str)),
-                    }
-                } else {
-                    BufferCursor::Cxx(Cursor::new(stack_str))
-                };
+                let buffer = BufferCursor::Cxx(Cursor::new(stack_str));
                 let cache = Buffer::new(path.to_path_buf(), buffer);
                 // ResourceLocation gets dropped (also cxx_storage if its not needed)
                 return Some(cache);
