@@ -1,6 +1,5 @@
 use crate::{jniopts::OPTS, LockResultExt};
 use materialbin::{
-    bgfx_shader::BgfxShader,
     pass::{ShaderCodePlatform, ShaderStage},
     CompiledMaterialDefinition, MinecraftVersion,
 };
@@ -121,7 +120,7 @@ pub fn process_material(man: AssetManager, data: &[u8]) -> Option<Vec<u8>> {
 }
 fn handle_lightmaps(
     materialbin: &mut CompiledMaterialDefinition,
-    version: MinecraftVersion,
+    _version: MinecraftVersion,
     changed: &mut i32,
 ) {
     let main_start = Finder::new(b"void main");

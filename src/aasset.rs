@@ -7,7 +7,6 @@ use crate::{
 use libc::{c_char, c_int, c_void, off64_t, off_t, size_t};
 use ndk_sys::{AAsset, AAssetManager};
 use std::{
-    cell::UnsafeCell,
     collections::HashMap,
     ffi::{CStr, OsStr},
     io::{self, Read, Seek},
@@ -24,8 +23,8 @@ struct AAssetPtr(*const ndk_sys::AAsset);
 unsafe impl Send for AAssetPtr {}
 
 // The assets we have registered to replace data about
-static mut WANTED_ASSETS: LazyLock<UnsafeCell<HashMap<AAssetPtr, Buffer>>> =
-    LazyLock::new(|| UnsafeCell::new(HashMap::new()));
+static mut WANTED_ASSETS: LazyLock<Mutex<HashMap<AAssetPtr, Buffer>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub unsafe extern "C" fn open(
     man: *mut AAssetManager,
@@ -45,7 +44,10 @@ pub unsafe extern "C" fn open(
     let c_path: &Path = Path::new(os_str);
     let mut sus = MC_FILELOADER.lock().ignore_poison();
     if let Some(yay) = sus.get_file(c_path, manager) {
-        WANTED_ASSETS.get_mut().insert(AAssetPtr(aasset), yay);
+        WANTED_ASSETS
+            .lock()
+            .ignore_poison()
+            .insert(AAssetPtr(aasset), yay);
     }
     aasset
 }
@@ -62,14 +64,15 @@ macro_rules! handle_result {
 }
 
 pub unsafe extern "C" fn seek64(aasset: *mut AAsset, off: off64_t, whence: c_int) -> off64_t {
-    let Some(file) = WANTED_ASSETS.get_mut().get_mut(&AAssetPtr(aasset)) else {
+    let mut wanted = WANTED_ASSETS.lock().ignore_poison();
+    let Some(file) = wanted.get_mut(&AAssetPtr(aasset)) else {
         return ndk_sys::AAsset_seek64(aasset, off, whence);
     };
     handle_result!(seek_facade(off, whence, file).try_into())
 }
 
 pub unsafe extern "C" fn seek(aasset: *mut AAsset, off: off_t, whence: c_int) -> off_t {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let mut wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     let Some(file) = wanted_assets.get_mut(&AAssetPtr(aasset)) else {
         return ndk_sys::AAsset_seek(aasset, off, whence);
     };
@@ -77,7 +80,7 @@ pub unsafe extern "C" fn seek(aasset: *mut AAsset, off: off_t, whence: c_int) ->
 }
 
 pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size_t) -> c_int {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let mut wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     let Some(file) = wanted_assets.get_mut(&AAssetPtr(aasset)) else {
         return ndk_sys::AAsset_read(aasset, buf, count);
     };
@@ -88,7 +91,7 @@ pub unsafe extern "C" fn read(aasset: *mut AAsset, buf: *mut c_void, count: size
 }
 
 pub unsafe extern "C" fn len(aasset: *mut AAsset) -> off_t {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     let Some(file) = wanted_assets.get(&AAssetPtr(aasset)) else {
         return ndk_sys::AAsset_getLength(aasset);
     };
@@ -96,7 +99,7 @@ pub unsafe extern "C" fn len(aasset: *mut AAsset) -> off_t {
 }
 
 pub unsafe extern "C" fn len64(aasset: *mut AAsset) -> off64_t {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     let Some(file) = wanted_assets.get(&AAssetPtr(aasset)) else {
         return ndk_sys::AAsset_getLength64(aasset);
     };
@@ -104,7 +107,7 @@ pub unsafe extern "C" fn len64(aasset: *mut AAsset) -> off64_t {
 }
 
 pub unsafe extern "C" fn rem(aasset: *mut AAsset) -> off_t {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     let Some(file) = wanted_assets.get(&AAssetPtr(aasset)) else {
         return ndk_sys::AAsset_getRemainingLength(aasset);
     };
@@ -112,7 +115,7 @@ pub unsafe extern "C" fn rem(aasset: *mut AAsset) -> off_t {
 }
 
 pub unsafe extern "C" fn rem64(aasset: *mut AAsset) -> off64_t {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     let Some(file) = wanted_assets.get(&AAssetPtr(aasset)) else {
         return ndk_sys::AAsset_getRemainingLength64(aasset);
     };
@@ -120,7 +123,7 @@ pub unsafe extern "C" fn rem64(aasset: *mut AAsset) -> off64_t {
 }
 
 pub unsafe extern "C" fn close(aasset: *mut AAsset) {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let mut wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     if let Some(buffer) = wanted_assets.remove(&AAssetPtr(aasset)) {
         MC_FILELOADER.lock().ignore_poison().last_buffer = Some(buffer);
     }
@@ -128,7 +131,7 @@ pub unsafe extern "C" fn close(aasset: *mut AAsset) {
 }
 
 pub unsafe extern "C" fn get_buffer(aasset: *mut AAsset) -> *const c_void {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let mut wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     let Some(file) = wanted_assets.get_mut(&AAssetPtr(aasset)) else {
         return ndk_sys::AAsset_getBuffer(aasset);
     };
@@ -141,7 +144,7 @@ pub unsafe extern "C" fn fd_dummy(
     out_start: *mut off_t,
     out_len: *mut off_t,
 ) -> c_int {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => {
             log::error!("WE GOT BUSTED NOOO");
@@ -156,7 +159,7 @@ pub unsafe extern "C" fn fd_dummy64(
     out_start: *mut off64_t,
     out_len: *mut off64_t,
 ) -> c_int {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => {
             log::error!("WE GOT BUSTED NOOO");
@@ -167,7 +170,7 @@ pub unsafe extern "C" fn fd_dummy64(
 }
 
 pub unsafe extern "C" fn is_alloc(aasset: *mut AAsset) -> c_int {
-    let wanted_assets = WANTED_ASSETS.get_mut();
+    let wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     match wanted_assets.get(&AAssetPtr(aasset)) {
         Some(_) => false as c_int,
         None => ndk_sys::AAsset_isAllocated(aasset),
