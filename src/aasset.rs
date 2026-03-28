@@ -15,7 +15,7 @@ use std::{
     //    ptr,
     sync::{LazyLock, Mutex},
 };
-static MC_FILELOADER: LazyLock<Mutex<FileLoader>> = LazyLock::new(|| Mutex::new(FileLoader::new()));
+static mut MC_FILELOADER: LazyLock<FileLoader> = LazyLock::new(|| FileLoader::new());
 // This makes me feel wrong... but all we will do is compare the pointer
 // and the struct will be used in a mutex so this is safe??
 #[derive(PartialEq, Eq, Hash)]
@@ -37,8 +37,8 @@ pub unsafe extern "C" fn open(
     let raw_cstr = c_str.to_bytes();
     let os_str = OsStr::from_bytes(raw_cstr);
     let c_path: &Path = Path::new(os_str);
-    let mut sus = MC_FILELOADER.lock().ignore_poison();
-    if let Some(yay) = sus.get_file(c_path) {
+    //    let mut sus = MC_FILELOADER.lock().ignore_poison();
+    if let Some(yay) = MC_FILELOADER.get_file(c_path) {
         WANTED_ASSETS
             .lock()
             .ignore_poison()
@@ -120,7 +120,7 @@ pub unsafe extern "C" fn rem64(aasset: *mut AAsset) -> off64_t {
 pub unsafe extern "C" fn close(aasset: *mut AAsset) {
     let mut wanted_assets = WANTED_ASSETS.lock().ignore_poison();
     if let Some(buffer) = wanted_assets.remove(&AAssetPtr(aasset)) {
-        MC_FILELOADER.lock().ignore_poison().last_buffer = Some(buffer);
+        MC_FILELOADER.last_buffer = Some(buffer);
     }
     ndk_sys::AAsset_close(aasset);
 }
