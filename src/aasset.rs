@@ -119,9 +119,9 @@ pub unsafe extern "C" fn rem64(aasset: *mut AAsset) -> off64_t {
 
 pub unsafe extern "C" fn close(aasset: *mut AAsset) {
     let mut wanted_assets = WANTED_ASSETS.lock().ignore_poison();
-    if let Some(buffer) = wanted_assets.remove(&AAssetPtr(aasset)) {
-        MC_FILELOADER.last_buffer = Some(buffer);
-    }
+    // if let Some(buffer) = wanted_assets.remove(&AAssetPtr(aasset)) {
+    //     MC_FILELOADER.last_buffer = Some(buffer);
+    // }
     ndk_sys::AAsset_close(aasset);
 }
 

@@ -66,13 +66,13 @@ impl FileLoader {
     }
     pub fn get_file(&mut self, path: &Path) -> Option<Buffer> {
         let stripped = path.strip_prefix("assets/").unwrap_or(path);
-        if let Some(mut cache) = self.last_buffer.take_if(|c| c.name == path) {
-            log::info!("Cache hit!: {:#?}", path);
-            cache
-                .rewind()
-                .expect("Unable to rewind in a memory buffer?, impossible");
-            return Some(cache);
-        }
+        // if let Some(mut cache) = self.last_buffer.take_if(|c| c.name == path) {
+        //     log::info!("Cache hit!: {:#?}", path);
+        //     cache
+        //         .rewind()
+        //         .expect("Unable to rewind in a memory buffer?, impossible");
+        //     return Some(cache);
+        // }
         let replacement_list = folder_list! {
             apk: "gui/dist/hbui/" -> pack: "hbui/",
             apk: "skin_packs/persona/" -> pack: "persona/",
