@@ -4,7 +4,7 @@ use std::{borrow::Cow, collections::HashMap};
 // #[cfg(target_pointer_width = "64")]
 // use plt_rs::elf64::{self, DynRela};
 use plt_rs::DynamicLibrary;
-use region::{protect_with_handle, Protection};
+use region::{protect, protect_with_handle, Protection};
 
 pub fn replace_plt_functions<const LEN: usize>(
     dyn_lib: &DynamicLibrary,
@@ -27,10 +27,11 @@ fn replace_plt_function(base_addr: usize, offset: usize, replacement: *const u8)
     const PTR_LEN: usize = std::mem::size_of::<usize>();
     unsafe {
         // Set the memory page to read, write
-        let _handle = protect_with_handle(plt_fn_ptr, PTR_LEN, Protection::READ_WRITE)
-            .expect("Mprotect failed");
+        let _handle =
+            protect(plt_fn_ptr, PTR_LEN, Protection::READ_WRITE).expect("Mprotect failed");
         // Replace the function address
         plt_fn_ptr.write_unaligned(replacement);
+        protect(plt_fn_ptr, PTR_LEN, Protection::READ_EXECUTE).unwrap();
     }
 }
 
