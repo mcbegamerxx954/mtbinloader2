@@ -109,7 +109,7 @@ pub struct Buffer {
     object: BufferCursor,
 }
 impl Buffer {
-    fn new(name: PathBuf, object: BufferCursor) -> Self {
+    pub fn new(name: PathBuf, object: BufferCursor) -> Self {
         Self { name, object }
     }
 }
