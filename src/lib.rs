@@ -17,7 +17,9 @@ use plt_rs::DynamicLibrary;
 use tinypatscan::Pattern;
 
 #[cfg(target_arch = "aarch64")]
-const RPMC_PATTERNS: [Pattern; 3] = [
+const RPMC_PATTERNS: [Pattern; 4] = [
+    // v26.40
+    Pattern::from_str("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 F6 03 03 2A F5 03 02 AA ?? ?? ?? F9 F3 03 00 AA"),
     //1.21.120.4
     Pattern::from_str("FF ?? 02 D1 FD 7B ?? A9 ?? ?? ?? ?? FA 67 ?? A9 F8 5F ?? A9 F6 57 ?? A9 F4 4F ?? A9 FD ?? 01 91 ?? D0 3B D5 ?? 03 03 2A ?? 03 02 AA ?? 17 40 F9 F3 03 00 AA A8 83 1F F8"),
     // V1.21.60.21
@@ -25,6 +27,7 @@ const RPMC_PATTERNS: [Pattern; 3] = [
     // V1.19.50-1.21.50
     Pattern::from_str("FF 03 03 D1 FD 7B 07 A9 FD C3 01 91 F9 43 00 F9 F8 5F 09 A9 F6 57 0A A9 F4 4F 0B A9 59 D0 3B D5 F6 03 03 2A 28 17 40 F9 F5 03 02 AA F3 03 00 AA A8 83 1F F8 28 10 40 F9"),
 ];
+
 #[cfg(target_arch = "arm")]
 const RPMC_PATTERNS: [Pattern; 2] = [
     //1.21.120.4
