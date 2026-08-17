@@ -4,7 +4,7 @@ use std::{borrow::Cow, collections::HashMap};
 // #[cfg(target_pointer_width = "64")]
 // use plt_rs::elf64::{self, DynRela};
 use plt_rs::DynamicLibrary;
-use region::{protect, protect_with_handle, Protection};
+use region::{protect_with_handle, Protection};
 
 pub fn replace_plt_functions<const LEN: usize>(
     dyn_lib: &DynamicLibrary,
@@ -18,21 +18,29 @@ pub fn replace_plt_functions<const LEN: usize>(
     for (fn_name, replacement) in functions {
         let name = Cow::Borrowed(fn_name);
         if let Some(fn_plt) = table.get(&name) {
-            replace_plt_function(base_addr, fn_plt.r_offset as usize, replacement);
+            if let Err(error) = replace_plt_function(
+                base_addr,
+                fn_plt.r_offset as usize,
+                replacement,
+            ) {
+                log::error!("Failed to replace {fn_name} PLT entry: {error}");
+            }
         }
     }
 }
-fn replace_plt_function(base_addr: usize, offset: usize, replacement: *const u8) {
+fn replace_plt_function(
+    base_addr: usize,
+    offset: usize,
+    replacement: *const u8,
+) -> region::Result<()> {
     let plt_fn_ptr = (base_addr + offset) as *mut *const u8;
     const PTR_LEN: usize = std::mem::size_of::<usize>();
     unsafe {
-        // Set the memory page to read, write
-        let _handle =
-            protect(plt_fn_ptr, PTR_LEN, Protection::READ_WRITE).expect("Mprotect failed");
+        let _guard = protect_with_handle(plt_fn_ptr, PTR_LEN, Protection::READ_WRITE)?;
         // Replace the function address
         plt_fn_ptr.write_unaligned(replacement);
-        protect(plt_fn_ptr, PTR_LEN, Protection::READ_EXECUTE).unwrap();
     }
+    Ok(())
 }
 
 // /// Finding target function differs on 32 bit and 64 bit.
