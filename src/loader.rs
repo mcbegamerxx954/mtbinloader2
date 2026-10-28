@@ -57,6 +57,7 @@ macro_rules! folder_list {
     }
 }
 
+#[allow(dead_code)]
 pub struct FileLoader {
     pub last_buffer: Option<Buffer>,
 }
@@ -104,6 +105,7 @@ impl FileLoader {
         None
     }
 }
+#[allow(dead_code)]
 pub struct Buffer {
     name: PathBuf,
     object: BufferCursor,

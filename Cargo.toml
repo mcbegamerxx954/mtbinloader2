@@ -25,14 +25,19 @@ tinypatscan = { git = "https://github.com/mcbegamerxx954/tinypatscan", version =
 [profile.release]
 # This lib gets called from nowhere and so unwinding = crash
 panic = "abort"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
 
 [profile.githubci]
 inherits = "release"
 strip = true
-lto = true 
+lto = "fat"
 codegen-units = 1 
 debug = false
 panic = "abort"
+opt-level = 3
 
 [lib]
 crate-type = ["cdylib"]

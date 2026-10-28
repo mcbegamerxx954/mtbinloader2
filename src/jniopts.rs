@@ -30,7 +30,7 @@ pub struct FaFaFile {
     pub name: PathBuf,
     pub data: Vec<u8>,
 }
-pub static mut FAFAFILES: Mutex<Vec<FaFaFile>> = Mutex::new(Vec::new());
+pub static FAFAFILES: Mutex<Vec<FaFaFile>> = Mutex::new(Vec::new());
 #[no_mangle]
 extern "C" fn Java_io_bambosan_mbloader_launcherUtils_LibBindings_addCustomFile(
     mut env: JNIEnv,
@@ -38,7 +38,7 @@ extern "C" fn Java_io_bambosan_mbloader_launcherUtils_LibBindings_addCustomFile(
     res_name: JString,
     res_data: JByteArray,
 ) {
-    let mut sus = unsafe { FAFAFILES.lock().ignore_poison() };
+    let mut sus = FAFAFILES.lock().ignore_poison();
     let name_pt1 = env.get_string(&res_name).unwrap();
     let name = name_pt1.to_str().unwrap();
     //    let len = env.get_array_length(&res_data).unwrap();
